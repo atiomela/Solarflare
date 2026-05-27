@@ -53,34 +53,18 @@
 #   sfc/5.3.14.1010: built
 - name: "Rebuild — parse DKMS state into facts"
   ansible.builtin.set_fact:
-    solarflare_dkms_sfc_lines: >-
-      {{ _sfc_dkms_status.stdout_lines
-         | default([])
-         | select('match', '^sfc[/, ]')
-         | list }}
-    solarflare_dkms_onload_lines: >-
-      {{ _sfc_dkms_status.stdout_lines
-         | default([])
-         | select('match', '^onload[/, ]')
-         | list }}
+    solarflare_dkms_sfc_lines: "{{ _sfc_dkms_status.stdout_lines | default([]) | select('match', '^sfc[/, ]') | list }}"
+    solarflare_dkms_onload_lines: "{{ _sfc_dkms_status.stdout_lines | default([]) | select('match', '^onload[/, ]') | list }}"
 
 - name: "Rebuild — does sfc DKMS already cover the running kernel?"
   ansible.builtin.set_fact:
     solarflare_dkms_sfc_present: "{{ solarflare_dkms_sfc_lines | length > 0 }}"
-    solarflare_dkms_sfc_current: >-
-      {{ solarflare_dkms_sfc_lines
-         | select('search', ansible_kernel | regex_escape)
-         | select('search', 'installed')
-         | list | length > 0 }}
+    solarflare_dkms_sfc_current: "{{ solarflare_dkms_sfc_lines | select('search', ansible_kernel | regex_escape) | select('search', 'installed') | list | length > 0 }}"
 
 - name: "Rebuild — does onload DKMS already cover the running kernel?"
   ansible.builtin.set_fact:
     solarflare_dkms_onload_present: "{{ solarflare_dkms_onload_lines | length > 0 }}"
-    solarflare_dkms_onload_current: >-
-      {{ solarflare_dkms_onload_lines
-         | select('search', ansible_kernel | regex_escape)
-         | select('search', 'installed')
-         | list | length > 0 }}
+    solarflare_dkms_onload_current: "{{ solarflare_dkms_onload_lines | select('search', ansible_kernel | regex_escape) | select('search', 'installed') | list | length > 0 }}"
 
 - name: "Rebuild — summary of DKMS detection"
   ansible.builtin.debug:
@@ -117,9 +101,7 @@
 
     - name: "Rebuild driver — extract sfc dkms module name and version"
       ansible.builtin.set_fact:
-        _sfc_dkms_sfc_modver: >-
-          {{ (solarflare_dkms_sfc_lines | first).split(',')[0]
-             | replace('sfc/', '') | trim }}
+        _sfc_dkms_sfc_modver: "{{ (solarflare_dkms_sfc_lines | first).split(',')[0] | replace('sfc/', '') | trim }}"
 
     - name: "Rebuild driver — dkms install for the running kernel"
       ansible.builtin.command:
@@ -198,10 +180,7 @@
 
     - name: "ROLLBACK (rebuild driver) — fail the play"
       ansible.builtin.fail:
-        msg: >-
-          DKMS rebuild of sfc failed for kernel {{ ansible_kernel }}.
-          Backed-up initramfs restored. Inspect:
-          /var/lib/dkms/sfc/{{ _sfc_dkms_sfc_modver | default('?') }}/build/make.log
+        msg: "DKMS rebuild of sfc failed for kernel {{ ansible_kernel }}. Backed-up initramfs restored. Inspect: /var/lib/dkms/sfc/{{ _sfc_dkms_sfc_modver | default('?') }}/build/make.log"
 
 # ---------------------------------------------------------------------------
 # Rebuild block (ONLOAD) — only if Onload was already installed
@@ -218,9 +197,7 @@
 
     - name: "Rebuild onload — extract onload dkms module name and version"
       ansible.builtin.set_fact:
-        _sfc_dkms_onload_modver: >-
-          {{ (solarflare_dkms_onload_lines | first).split(',')[0]
-             | replace('onload/', '') | trim }}
+        _sfc_dkms_onload_modver: "{{ (solarflare_dkms_onload_lines | first).split(',')[0] | replace('onload/', '') | trim }}"
 
     - name: "Rebuild onload — unload onload modules"
       community.general.modprobe:
@@ -268,9 +245,7 @@
 
     - name: "ROLLBACK (rebuild onload) — fail the play"
       ansible.builtin.fail:
-        msg: >-
-          DKMS rebuild of onload failed for kernel {{ ansible_kernel }}.
-          Inspect: /var/lib/dkms/onload/{{ _sfc_dkms_onload_modver | default('?') }}/build/make.log
+        msg: "DKMS rebuild of onload failed for kernel {{ ansible_kernel }}. Inspect: /var/lib/dkms/onload/{{ _sfc_dkms_onload_modver | default('?') }}/build/make.log"
 
 # ---------------------------------------------------------------------------
 # Fallback: no DKMS package — reinstall the matrix-resolved driver package
@@ -278,10 +253,7 @@
 
 - name: "Rebuild — DKMS not available for sfc; falling back to package reinstall"
   ansible.builtin.debug:
-    msg: >-
-      No DKMS sfc module present on this host. Performing a full driver
-      package install for kernel {{ ansible_kernel }} using the matrix /
-      manual overrides.
+    msg: "No DKMS sfc module present on this host. Performing a full driver package install for kernel {{ ansible_kernel }} using the matrix / manual overrides."
   when:
     - solarflare_dkms_sfc_present is defined
     - not (solarflare_dkms_sfc_present | bool)

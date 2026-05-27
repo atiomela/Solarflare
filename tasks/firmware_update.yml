@@ -20,9 +20,7 @@
 
     - name: "Firmware — fail if sfupdate is missing"
       ansible.builtin.fail:
-        msg: >-
-          {{ solarflare_sfupdate_bin }} not found. Install the 'sfutils'
-          package from the Solarflare/Xilinx/AMD support bundle.
+        msg: "{{ solarflare_sfupdate_bin }} not found. Install the 'sfutils' package from the Solarflare/Xilinx/AMD support bundle."
       when: not _sfup_stat.stat.exists
 
     # ---- Pre-flash snapshot --------------------------------------------------
@@ -37,18 +35,11 @@
 
     - name: "Firmware — set pre-flash fact"
       ansible.builtin.set_fact:
-        solarflare_firmware_pre_map: >-
-          {{ dict(solarflare_interfaces
-              | zip(_sfup_fw_before.results | map(attribute='stdout') | map('trim') | list)) }}
+        solarflare_firmware_pre_map: "{{ dict(solarflare_interfaces | zip(_sfup_fw_before.results | map(attribute='stdout') | map('trim') | list)) }}"
 
     - name: "Firmware — dump current firmware image as rollback snapshot"
       ansible.builtin.command:
-        cmd: >-
-          {{ solarflare_sfupdate_bin }}
-          --adapter={{ item }}
-          --write
-          --image={{ solarflare_backup_dir }}/firmware-{{ item }}.dat
-          --read-only
+        cmd: "{{ solarflare_sfupdate_bin }} --adapter={{ item }} --write --image={{ solarflare_backup_dir }}/firmware-{{ item }}.dat --read-only"
       loop: "{{ solarflare_interfaces }}"
       register: _sfup_dump
       changed_when: false
@@ -60,13 +51,7 @@
     # ---- Flash --------------------------------------------------------------
     - name: "Firmware — flash new firmware on each interface"
       ansible.builtin.command:
-        cmd: >-
-          {{ solarflare_sfupdate_bin }}
-          --adapter={{ item }}
-          --write
-          {% if solarflare_resolved.firmware.image | length > 0 %}--image={{ solarflare_resolved.firmware.image }}{% endif %}
-          {% if solarflare_firmware_force | bool %}--force{% endif %}
-          --yes
+        cmd: "{{ solarflare_sfupdate_bin }} --adapter={{ item }} --write {% if solarflare_resolved.firmware.image | length > 0 %}--image={{ solarflare_resolved.firmware.image }}{% endif %} {% if solarflare_firmware_force | bool %}--force{% endif %} --yes"
       loop: "{{ solarflare_interfaces }}"
       register: _sfup_flash
       changed_when: "'success' in (_sfup_flash.stdout | default('') | lower) or _sfup_flash.rc == 0"
@@ -92,11 +77,8 @@
 
     - name: "Firmware — set post-flash fact"
       ansible.builtin.set_fact:
-        solarflare_firmware_post_map: >-
-          {{ dict(solarflare_interfaces
-              | zip(_sfup_fw_after.results | map(attribute='stdout') | map('trim') | list)) }}
-        solarflare_firmware_version_after: >-
-          {{ (_sfup_fw_after.results[0].stdout | default('')) | trim }}
+        solarflare_firmware_post_map: "{{ dict(solarflare_interfaces | zip(_sfup_fw_after.results | map(attribute='stdout') | map('trim') | list)) }}"
+        solarflare_firmware_version_after: "{{ (_sfup_fw_after.results[0].stdout | default('')) | trim }}"
 
     - name: "Firmware — check link is alive after flash"
       ansible.builtin.shell:
@@ -112,14 +94,8 @@
           - solarflare_firmware_post_map[item.item] | length > 0
           - solarflare_firmware_post_map[item.item] != solarflare_firmware_pre_map[item.item]
           - item.stdout in ['up', 'unknown', 'down']
-        fail_msg: >-
-          NIC {{ item.item }} did not come back healthy after firmware flash
-          (pre={{ solarflare_firmware_pre_map[item.item] }},
-           post={{ solarflare_firmware_post_map[item.item] | default('MISSING') }}).
-        success_msg: >-
-          NIC {{ item.item }} flashed
-          {{ solarflare_firmware_pre_map[item.item] }} →
-          {{ solarflare_firmware_post_map[item.item] }}
+        fail_msg: "NIC {{ item.item }} did not come back healthy after firmware flash (pre={{ solarflare_firmware_pre_map[item.item] }}, post={{ solarflare_firmware_post_map[item.item] | default('MISSING') }})."
+        success_msg: "NIC {{ item.item }} flashed {{ solarflare_firmware_pre_map[item.item] }} → {{ solarflare_firmware_post_map[item.item] }}"
       loop: "{{ _sfup_link.results }}"
       loop_control:
         label: "{{ item.item }}"
@@ -128,9 +104,7 @@
       ansible.builtin.assert:
         that:
           - solarflare_firmware_post_map[item] == solarflare_resolved.firmware.version
-        fail_msg: >-
-          NIC {{ item }} firmware {{ solarflare_firmware_post_map[item] }}
-          does not match matrix target {{ solarflare_resolved.firmware.version }}.
+        fail_msg: "NIC {{ item }} firmware {{ solarflare_firmware_post_map[item] }} does not match matrix target {{ solarflare_resolved.firmware.version }}."
       loop: "{{ solarflare_interfaces }}"
       when:
         - solarflare_resolved.firmware.version | length > 0
@@ -147,13 +121,7 @@
 
     - name: "ROLLBACK (firmware) — re-flash backup image per interface"
       ansible.builtin.command:
-        cmd: >-
-          {{ solarflare_sfupdate_bin }}
-          --adapter={{ item }}
-          --write
-          --image={{ solarflare_backup_dir }}/firmware-{{ item }}.dat
-          --force
-          --yes
+        cmd: "{{ solarflare_sfupdate_bin }} --adapter={{ item }} --write --image={{ solarflare_backup_dir }}/firmware-{{ item }}.dat --force --yes"
       loop: "{{ solarflare_interfaces }}"
       register: _sfup_rollback
       changed_when: true
@@ -184,8 +152,4 @@
 
     - name: "ROLLBACK (firmware) — fail the play"
       ansible.builtin.fail:
-        msg: >-
-          Solarflare firmware upgrade failed on {{ inventory_hostname }}.
-          Rollback attempted; current per-NIC versions:
-          {{ dict(solarflare_interfaces
-              | zip(_sfup_fw_rb.results | map(attribute='stdout') | map('trim') | list)) }}
+        msg: "Solarflare firmware upgrade failed on {{ inventory_hostname }}. Rollback attempted; current per-NIC versions: {{ dict(solarflare_interfaces | zip(_sfup_fw_rb.results | map(attribute='stdout') | map('trim') | list)) }}"

@@ -18,10 +18,7 @@
 
     - name: "Driver — record services that were active"
       ansible.builtin.set_fact:
-        solarflare_services_active: >-
-          {{ _sfc_svc_state.results
-             | selectattr('stdout', 'equalto', 'active')
-             | map(attribute='item') | list }}
+        solarflare_services_active: "{{ _sfc_svc_state.results | selectattr('stdout', 'equalto', 'active') | map(attribute='item') | list }}"
 
     - name: "Driver — stop active SFC-related services"
       ansible.builtin.systemd:
@@ -33,8 +30,7 @@
     # ---- 2. Unload modules --------------------------------------------------
     - name: "Driver — compute modules to unload (intersection with detect snapshot)"
       ansible.builtin.set_fact:
-        solarflare_modules_to_unload: >-
-          {{ solarflare_modules | intersect(_sfc_lsmod.stdout_lines | default([])) }}
+        solarflare_modules_to_unload: "{{ solarflare_modules | intersect(_sfc_lsmod.stdout_lines | default([])) }}"
 
     - name: "Driver — unload Solarflare modules"
       community.general.modprobe:
@@ -45,11 +41,7 @@
     # ---- 3. Install new driver package --------------------------------------
     - name: "Driver — assert a driver package path was staged"
       ansible.builtin.fail:
-        msg: >-
-          No driver package available to install. In rebuild mode this means
-          neither DKMS nor a matrix/manual package could be used. Either set
-          solarflare_driver_pkg_src/_url, add a matrix entry, or install
-          {{ ansible_os_family == 'RedHat' | ternary('kmod-sfc / sfc-dkms', 'sfc-dkms') }}.
+        msg: "No driver package available to install. In rebuild mode this means neither DKMS nor a matrix/manual package could be used. Either set solarflare_driver_pkg_src/_url, add a matrix entry, or install {{ ansible_os_family == 'RedHat' | ternary('kmod-sfc / sfc-dkms', 'sfc-dkms') }}."
       when: solarflare_driver_pkg_path is not defined
 
     - name: "Driver — install new RPM (RedHat)"
@@ -136,20 +128,14 @@
         that:
           - solarflare_driver_version_after | length > 0
           - solarflare_driver_version_after != solarflare_driver_version_before
-        fail_msg: >-
-          Driver version did not change after upgrade
-          (before={{ solarflare_driver_version_before }},
-           after={{ solarflare_driver_version_after }}).
-          Triggering rollback.
+        fail_msg: "Driver version did not change after upgrade (before={{ solarflare_driver_version_before }}, after={{ solarflare_driver_version_after }}). Triggering rollback."
         success_msg: "Driver upgraded {{ solarflare_driver_version_before }} → {{ solarflare_driver_version_after }}"
 
     - name: "Driver — assert version matches the matrix target (when one is set)"
       ansible.builtin.assert:
         that:
           - solarflare_driver_version_after == solarflare_resolved.driver.version
-        fail_msg: >-
-          Driver version {{ solarflare_driver_version_after }} does not match
-          target {{ solarflare_resolved.driver.version }} from matrix.
+        fail_msg: "Driver version {{ solarflare_driver_version_after }} does not match target {{ solarflare_resolved.driver.version }} from matrix."
         success_msg: "Driver matches expected target."
       when:
         - solarflare_resolved.driver.version | length > 0
@@ -224,9 +210,7 @@
 
     - name: "ROLLBACK (driver) — fail the play"
       ansible.builtin.fail:
-        msg: >-
-          Solarflare driver upgrade failed on {{ inventory_hostname }}.
-          Rolled back to previous driver/initramfs.
+        msg: "Solarflare driver upgrade failed on {{ inventory_hostname }}. Rolled back to previous driver/initramfs."
 
 - name: "Driver — reboot host if requested and update succeeded"
   ansible.builtin.reboot:

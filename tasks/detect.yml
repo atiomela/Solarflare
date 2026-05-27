@@ -68,11 +68,7 @@
 
 - name: "Detect — extract driver version (before)"
   ansible.builtin.set_fact:
-    solarflare_driver_version_before: >-
-      {{ (_sfc_ethtool.results[0].stdout
-          | regex_search('version:\\s*(\\S+)', '\\1') | first)
-          if (_sfc_ethtool is defined and _sfc_ethtool.results | length > 0)
-          else 'unknown' }}
+    solarflare_driver_version_before: "{{ (_sfc_ethtool.results[0].stdout | regex_search('version:\\s*(\\S+)', '\\1') | first) if (_sfc_ethtool is defined and _sfc_ethtool.results | length > 0) else 'unknown' }}"
   when:
     - solarflare_present | bool
     - _sfc_ethtool is defined
@@ -80,11 +76,7 @@
 
 - name: "Detect — extract firmware version (before)"
   ansible.builtin.set_fact:
-    solarflare_firmware_version_before: >-
-      {{ (_sfc_ethtool.results[0].stdout
-          | regex_search('firmware-version:\\s*(\\S+)', '\\1') | first)
-          if (_sfc_ethtool is defined and _sfc_ethtool.results | length > 0)
-          else 'unknown' }}
+    solarflare_firmware_version_before: "{{ (_sfc_ethtool.results[0].stdout | regex_search('firmware-version:\\s*(\\S+)', '\\1') | first) if (_sfc_ethtool is defined and _sfc_ethtool.results | length > 0) else 'unknown' }}"
   when:
     - solarflare_present | bool
     - _sfc_ethtool is defined
@@ -127,7 +119,7 @@
           exit 0
         fi
       fi
-      printf 'source=none version=none\n'
+      printf 'source=none version=\n'
     executable: /bin/bash
   register: _sfc_onload_probe
   changed_when: false
@@ -136,12 +128,9 @@
 
 - name: "Detect — parse Onload version output"
   ansible.builtin.set_fact:
-    solarflare_onload_installed: >-
-      {{ (_sfc_onload_probe.stdout | regex_search('version=(\\S+)', '\\1') | first | default('')) | length > 0 }}
-    solarflare_onload_version_before: >-
-      {{ _sfc_onload_probe.stdout | regex_search('version=(\\S+)', '\\1') | first | default('') }}
-    solarflare_onload_source: >-
-      {{ _sfc_onload_probe.stdout | regex_search('source=(\\S+)', '\\1') | first | default('none') }}
+    solarflare_onload_installed: "{{ (_sfc_onload_probe.stdout | regex_search('version=(\\S+)', '\\1') | first | default('')) | length > 0 }}"
+    solarflare_onload_version_before: "{{ _sfc_onload_probe.stdout | regex_search('version=(\\S+)', '\\1') | first | default('') }}"
+    solarflare_onload_source: "{{ _sfc_onload_probe.stdout | regex_search('source=(\\S+)', '\\1') | first | default('none') }}"
     solarflare_onload_loaded: "{{ 'onload' in (_sfc_lsmod.stdout_lines | default([])) }}"
 
 - name: "Detect — summary"

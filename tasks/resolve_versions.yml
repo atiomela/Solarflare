@@ -24,56 +24,23 @@
 
 - name: "Resolve — filter matrix by OS family and (when set) pinned release"
   ansible.builtin.set_fact:
-    _sfc_matrix_candidates: >-
-      {{ solarflare_compat_matrix
-         | selectattr('os_family', 'equalto', ansible_os_family)
-         | selectattr('release',
-                      'equalto' if (solarflare_pin_release | length) > 0
-                                 else 'defined',
-                      solarflare_pin_release)
-         | list }}
+    _sfc_matrix_candidates: "{{ solarflare_compat_matrix | selectattr('os_family', 'equalto', ansible_os_family) | selectattr('release', 'equalto' if (solarflare_pin_release | length) > 0 else 'defined', solarflare_pin_release) | list }}"
 
 - name: "Resolve — narrow by distribution major version when set on entries"
   ansible.builtin.set_fact:
-    _sfc_matrix_candidates: >-
-      {{ _sfc_matrix_candidates
-         | rejectattr('distribution_major_version', 'defined')
-         | list
-         + _sfc_matrix_candidates
-         | selectattr('distribution_major_version', 'defined')
-         | selectattr('distribution_major_version',
-                      'equalto', ansible_distribution_major_version)
-         | list }}
+    _sfc_matrix_candidates: "{{ (_sfc_matrix_candidates | rejectattr('distribution_major_version', 'defined') | list) + (_sfc_matrix_candidates | selectattr('distribution_major_version', 'defined') | selectattr('distribution_major_version', 'equalto', ansible_distribution_major_version) | list) }}"
 
 - name: "Resolve — narrow by distribution name when set on entries (Ubuntu vs Debian)"
   ansible.builtin.set_fact:
-    _sfc_matrix_candidates: >-
-      {{ _sfc_matrix_candidates
-         | rejectattr('distribution', 'defined')
-         | list
-         + _sfc_matrix_candidates
-         | selectattr('distribution', 'defined')
-         | selectattr('distribution', 'equalto', ansible_distribution)
-         | list }}
+    _sfc_matrix_candidates: "{{ _sfc_matrix_candidates | rejectattr('distribution', 'defined') | list + _sfc_matrix_candidates | selectattr('distribution', 'defined') | selectattr('distribution', 'equalto', ansible_distribution) | list }}"
 
 - name: "Resolve — pick the first entry whose kernel_regex matches the running kernel"
   ansible.builtin.set_fact:
-    solarflare_matrix_match: >-
-      {{ (_sfc_matrix_candidates
-           | selectattr('kernel_regex', 'defined')
-           | selectattr('kernel_regex',
-                        'match', ansible_kernel)
-           | list
-           | first) | default({}) }}
+    solarflare_matrix_match: "{{ (_sfc_matrix_candidates | selectattr('kernel_regex', 'defined') | selectattr('kernel_regex', 'match', ansible_kernel) | list | first) | default({}) }}"
 
 - name: "Resolve — warn if no matrix entry matched"
   ansible.builtin.debug:
-    msg: >-
-      No solarflare_compat_matrix entry matches
-      os_family={{ ansible_os_family }},
-      distro_major={{ ansible_distribution_major_version }},
-      kernel={{ ansible_kernel }}.
-      Falling back to manual overrides (if any) and sources listed in defaults.
+    msg: "No solarflare_compat_matrix entry matches os_family={{ ansible_os_family }}, distro_major={{ ansible_distribution_major_version }}, kernel={{ ansible_kernel }}. Falling back to manual overrides (if any) and sources listed in defaults."
   when: solarflare_matrix_match | length == 0
 
 # ---------------------------------------------------------------------------
@@ -88,79 +55,21 @@
   ansible.builtin.set_fact:
     solarflare_resolved:
       driver:
-        version: >-
-          {{ solarflare_matrix_match.driver.version
-             if (solarflare_version_selection != 'manual'
-                 and solarflare_matrix_match.driver is defined)
-             else '' }}
-        pkg_filename: >-
-          {{ solarflare_matrix_match.driver.pkg
-             if (solarflare_version_selection != 'manual'
-                 and solarflare_matrix_match.driver is defined)
-             else '' }}
-        src: >-
-          {{ solarflare_driver_pkg_src
-             if (solarflare_version_selection in ['manual', 'auto']
-                 and (solarflare_driver_pkg_src | length) > 0)
-             else '' }}
-        url: >-
-          {{ solarflare_driver_pkg_url
-             if (solarflare_version_selection in ['manual', 'auto']
-                 and (solarflare_driver_pkg_url | length) > 0)
-             else (solarflare_matrix_match.driver.url
-                   if (solarflare_version_selection != 'manual'
-                       and solarflare_matrix_match.driver is defined)
-                   else '') }}
-        source: >-
-          {{ solarflare_matrix_match.driver.source
-             if solarflare_matrix_match.driver is defined
-             else '' }}
+        version: "{{ solarflare_matrix_match.driver.version if (solarflare_version_selection != 'manual' and solarflare_matrix_match.driver is defined) else '' }}"
+        pkg_filename: "{{ solarflare_matrix_match.driver.pkg if (solarflare_version_selection != 'manual' and solarflare_matrix_match.driver is defined) else '' }}"
+        src: "{{ solarflare_driver_pkg_src if (solarflare_version_selection in ['manual', 'auto'] and (solarflare_driver_pkg_src | length) > 0) else '' }}"
+        url: "{{ solarflare_driver_pkg_url if (solarflare_version_selection in ['manual', 'auto'] and (solarflare_driver_pkg_url | length) > 0) else (solarflare_matrix_match.driver.url if (solarflare_version_selection != 'manual' and solarflare_matrix_match.driver is defined) else '') }}"
+        source: "{{ solarflare_matrix_match.driver.source if solarflare_matrix_match.driver is defined else '' }}"
       firmware:
-        version: >-
-          {{ solarflare_matrix_match.firmware.version
-             if (solarflare_version_selection != 'manual'
-                 and solarflare_matrix_match.firmware is defined)
-             else '' }}
-        image: >-
-          {{ solarflare_firmware_image
-             if (solarflare_version_selection in ['manual', 'auto']
-                 and (solarflare_firmware_image | length) > 0)
-             else (solarflare_matrix_match.firmware.image
-                   if (solarflare_version_selection != 'manual'
-                       and solarflare_matrix_match.firmware is defined)
-                   else '') }}
-        source: >-
-          {{ solarflare_matrix_match.firmware.source
-             if solarflare_matrix_match.firmware is defined
-             else '' }}
+        version: "{{ solarflare_matrix_match.firmware.version if (solarflare_version_selection != 'manual' and solarflare_matrix_match.firmware is defined) else '' }}"
+        image: "{{ solarflare_firmware_image if (solarflare_version_selection in ['manual', 'auto'] and (solarflare_firmware_image | length) > 0) else (solarflare_matrix_match.firmware.image if (solarflare_version_selection != 'manual' and solarflare_matrix_match.firmware is defined) else '') }}"
+        source: "{{ solarflare_matrix_match.firmware.source if solarflare_matrix_match.firmware is defined else '' }}"
       onload:
-        version: >-
-          {{ solarflare_matrix_match.onload.version
-             if (solarflare_version_selection != 'manual'
-                 and solarflare_matrix_match.onload is defined)
-             else '' }}
-        pkg_filename: >-
-          {{ solarflare_matrix_match.onload.pkg
-             if (solarflare_version_selection != 'manual'
-                 and solarflare_matrix_match.onload is defined)
-             else '' }}
-        src: >-
-          {{ solarflare_onload_pkg_src
-             if (solarflare_version_selection in ['manual', 'auto']
-                 and (solarflare_onload_pkg_src | length) > 0)
-             else '' }}
-        url: >-
-          {{ solarflare_onload_pkg_url
-             if (solarflare_version_selection in ['manual', 'auto']
-                 and (solarflare_onload_pkg_url | length) > 0)
-             else (solarflare_matrix_match.onload.url
-                   if (solarflare_version_selection != 'manual'
-                       and solarflare_matrix_match.onload is defined)
-                   else '') }}
-        source: >-
-          {{ solarflare_matrix_match.onload.source
-             if solarflare_matrix_match.onload is defined
-             else '' }}
+        version: "{{ solarflare_matrix_match.onload.version if (solarflare_version_selection != 'manual' and solarflare_matrix_match.onload is defined) else '' }}"
+        pkg_filename: "{{ solarflare_matrix_match.onload.pkg if (solarflare_version_selection != 'manual' and solarflare_matrix_match.onload is defined) else '' }}"
+        src: "{{ solarflare_onload_pkg_src if (solarflare_version_selection in ['manual', 'auto'] and (solarflare_onload_pkg_src | length) > 0) else '' }}"
+        url: "{{ solarflare_onload_pkg_url if (solarflare_version_selection in ['manual', 'auto'] and (solarflare_onload_pkg_url | length) > 0) else (solarflare_matrix_match.onload.url if (solarflare_version_selection != 'manual' and solarflare_matrix_match.onload is defined) else '') }}"
+        source: "{{ solarflare_matrix_match.onload.source if solarflare_matrix_match.onload is defined else '' }}"
 
 # ---------------------------------------------------------------------------
 # 2b. Build the Onload package SET — multi-package install.
@@ -281,13 +190,7 @@
 
 - name: "Resolve — fail if a required Onload package was not found in the repo"
   ansible.builtin.fail:
-    msg: >-
-      Required Onload package(s) not found in the repo:
-      {% for m in solarflare_onload_missing_required %}
-      - {{ m.name }}: {{ m.url }} (HTTP {{ m.status }})
-      {% endfor %}
-      Check solarflare_repo_base_url, solarflare_repo_os_dir, and the
-      filenames in the matrix entry.
+    msg: "Required Onload package(s) not found in the repo: {{ solarflare_onload_missing_required | map(attribute='name') | join(', ') }}. URLs: {{ solarflare_onload_missing_required | map(attribute='url') | join(' ; ') }}. Check solarflare_repo_base_url, solarflare_repo_os_dir, and the filenames in the matrix entry."
   when:
     - solarflare_action in ['onload', 'all']
     - solarflare_onload_missing_required | default([]) | length > 0

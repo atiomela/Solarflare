@@ -35,11 +35,7 @@
   ansible.builtin.set_fact:
     solarflare_compat_issues: "{{ solarflare_compat_issues + [_issue] }}"
   vars:
-    _issue: >-
-      Running kernel {{ ansible_kernel }} does not match the kernel_regex
-      ({{ solarflare_matrix_match.kernel_regex }}) of the resolved matrix entry
-      '{{ solarflare_matrix_match.release }}'. Re-resolve with the correct
-      ansible_kernel, or remove solarflare_pin_release.
+    _issue: "Running kernel {{ ansible_kernel }} does not match the kernel_regex ({{ solarflare_matrix_match.kernel_regex }}) of the resolved matrix entry '{{ solarflare_matrix_match.release }}'. Re-resolve with the correct ansible_kernel, or remove solarflare_pin_release."
   when:
     - solarflare_matrix_match | length > 0
     - not (ansible_kernel is match(solarflare_matrix_match.kernel_regex))
@@ -48,11 +44,7 @@
   ansible.builtin.set_fact:
     solarflare_compat_issues: "{{ solarflare_compat_issues + [_issue] }}"
   vars:
-    _issue: >-
-      solarflare_version_selection is 'matrix' but no entry matched
-      os_family={{ ansible_os_family }}, distribution={{ ansible_distribution }},
-      version={{ ansible_distribution_major_version }}, kernel={{ ansible_kernel }}.
-      Add a matrix entry or switch to selection mode 'manual' / 'auto'.
+    _issue: "solarflare_version_selection is 'matrix' but no entry matched os_family={{ ansible_os_family }}, distribution={{ ansible_distribution }}, version={{ ansible_distribution_major_version }}, kernel={{ ansible_kernel }}. Add a matrix entry or switch to selection mode 'manual' / 'auto'."
   when:
     - solarflare_version_selection == 'matrix'
     - solarflare_matrix_match | length == 0
@@ -63,17 +55,10 @@
 
 - name: "Compat — compute driver major series (e.g. '5.3' from '5.3.14.1010')"
   ansible.builtin.set_fact:
-    solarflare_driver_target_series: >-
-      {{ (solarflare_resolved.driver.version.split('.')[:2] | join('.'))
-         if (solarflare_resolved.driver.version | length) > 0 else '' }}
-    solarflare_onload_target_series: >-
-      {{ (solarflare_resolved.onload.version.split('.')[0])
-         if (solarflare_resolved.onload.version | length) > 0 else '' }}
-    solarflare_firmware_target_major: >-
-      {{ (solarflare_resolved.firmware.version.split('.')[0])
-         if (solarflare_resolved.firmware.version | length) > 0 else '' }}
-    solarflare_running_kver_majmin: >-
-      {{ ansible_kernel.split('.')[:2] | join('.') }}
+    solarflare_driver_target_series: "{{ (solarflare_resolved.driver.version.split('.')[:2] | join('.')) if (solarflare_resolved.driver.version | length) > 0 else '' }}"
+    solarflare_onload_target_series: "{{ (solarflare_resolved.onload.version.split('.')[0]) if (solarflare_resolved.onload.version | length) > 0 else '' }}"
+    solarflare_firmware_target_major: "{{ (solarflare_resolved.firmware.version.split('.')[0]) if (solarflare_resolved.firmware.version | length) > 0 else '' }}"
+    solarflare_running_kver_majmin: "{{ ansible_kernel.split('.')[:2] | join('.') }}"
 
 - name: "Compat — driver target series supports running kernel?"
   ansible.builtin.set_fact:
@@ -81,23 +66,12 @@
   vars:
     _rule: "{{ solarflare_compat_rules.driver_kernel_support[solarflare_driver_target_series] | default({}) }}"
     _running_kv: "{{ solarflare_running_kver_majmin }}"
-    _issue: >-
-      Driver series {{ solarflare_driver_target_series }} declares supported
-      kernel range {{ _rule.kernel_min | default('?') }}..{{ _rule.kernel_max | default('?') }},
-      but running kernel is {{ ansible_kernel }} ({{ _running_kv }}).
-      See: {{ _rule.notes | default('(no rule defined)') }}
+    _issue: "Driver series {{ solarflare_driver_target_series }} declares supported kernel range {{ _rule.kernel_min | default('?') }}..{{ _rule.kernel_max | default('?') }}, but running kernel is {{ ansible_kernel }} ({{ _running_kv }}). See: {{ _rule.notes | default('(no rule defined)') }}"
   when:
     - solarflare_action in ['driver', 'both', 'all', 'rebuild']
     - solarflare_driver_target_series | length > 0
     - solarflare_compat_rules.driver_kernel_support[solarflare_driver_target_series] is defined
-    - >-
-      (solarflare_running_kver_majmin is version(
-         solarflare_compat_rules.driver_kernel_support[solarflare_driver_target_series].kernel_min,
-         '<'))
-      or
-      (solarflare_running_kver_majmin is version(
-         solarflare_compat_rules.driver_kernel_support[solarflare_driver_target_series].kernel_max,
-         '>'))
+    - "(solarflare_running_kver_majmin is version( solarflare_compat_rules.driver_kernel_support[solarflare_driver_target_series].kernel_min, '<')) or (solarflare_running_kver_majmin is version( solarflare_compat_rules.driver_kernel_support[solarflare_driver_target_series].kernel_max, '>'))"
 
 # ---------------------------------------------------------------------------
 # 3. Onload-vs-kernel and Onload-vs-driver compatibility
@@ -108,35 +82,20 @@
     solarflare_compat_issues: "{{ solarflare_compat_issues + [_issue] }}"
   vars:
     _rule: "{{ solarflare_compat_rules.onload_kernel_support[solarflare_onload_target_series] | default({}) }}"
-    _issue: >-
-      Onload major {{ solarflare_onload_target_series }}.x declares supported
-      kernel range {{ _rule.kernel_min | default('?') }}..{{ _rule.kernel_max | default('?') }},
-      but running kernel is {{ ansible_kernel }}.
-      See: {{ _rule.notes | default('') }}
+    _issue: "Onload major {{ solarflare_onload_target_series }}.x declares supported kernel range {{ _rule.kernel_min | default('?') }}..{{ _rule.kernel_max | default('?') }}, but running kernel is {{ ansible_kernel }}. See: {{ _rule.notes | default('') }}"
   when:
     - solarflare_action in ['onload', 'all', 'rebuild']
     - solarflare_rebuild_onload_if_present | default(true) | bool or solarflare_action != 'rebuild'
     - solarflare_onload_target_series | length > 0
     - solarflare_compat_rules.onload_kernel_support[solarflare_onload_target_series] is defined
-    - >-
-      (solarflare_running_kver_majmin is version(
-         solarflare_compat_rules.onload_kernel_support[solarflare_onload_target_series].kernel_min,
-         '<'))
-      or
-      (solarflare_running_kver_majmin is version(
-         solarflare_compat_rules.onload_kernel_support[solarflare_onload_target_series].kernel_max,
-         '>'))
+    - "(solarflare_running_kver_majmin is version( solarflare_compat_rules.onload_kernel_support[solarflare_onload_target_series].kernel_min, '<')) or (solarflare_running_kver_majmin is version( solarflare_compat_rules.onload_kernel_support[solarflare_onload_target_series].kernel_max, '>'))"
 
 - name: "Compat — Onload major requires a compatible driver series?"
   ansible.builtin.set_fact:
     solarflare_compat_issues: "{{ solarflare_compat_issues + [_issue] }}"
   vars:
     _rule: "{{ solarflare_compat_rules.onload_driver_support[solarflare_onload_target_series] | default({}) }}"
-    _issue: >-
-      Onload {{ solarflare_onload_target_series }}.x requires driver series in
-      {{ _rule.driver_series | default([]) }}, but target driver series is
-      '{{ solarflare_driver_target_series }}' (currently installed:
-      {{ solarflare_driver_version_before | default('n/a') }}).
+    _issue: "Onload {{ solarflare_onload_target_series }}.x requires driver series in {{ _rule.driver_series | default([]) }}, but target driver series is '{{ solarflare_driver_target_series }}' (currently installed: {{ solarflare_driver_version_before | default('n/a') }})."
   when:
     - solarflare_action in ['onload', 'all']
     - solarflare_onload_target_series | length > 0
@@ -154,11 +113,7 @@
     solarflare_compat_issues: "{{ solarflare_compat_issues + [_issue] }}"
   vars:
     _rule: "{{ solarflare_compat_rules.firmware_driver_support[solarflare_firmware_target_major] | default({}) }}"
-    _issue: >-
-      Firmware major {{ solarflare_firmware_target_major }}.x requires driver
-      series in {{ _rule.driver_series | default([]) }}, but the installed
-      driver is {{ solarflare_driver_version_before | default('unknown') }}
-      and the target is {{ solarflare_resolved.driver.version | default('(none)') }}.
+    _issue: "Firmware major {{ solarflare_firmware_target_major }}.x requires driver series in {{ _rule.driver_series | default([]) }}, but the installed driver is {{ solarflare_driver_version_before | default('unknown') }} and the target is {{ solarflare_resolved.driver.version | default('(none)') }}."
   when:
     - solarflare_action in ['firmware', 'both', 'all']
     - solarflare_firmware_target_major | length > 0
@@ -191,10 +146,7 @@
     solarflare_compat_issues: "{{ solarflare_compat_issues + [_issue] }}"
   vars:
     _pkg: "{{ 'kernel-devel-' + ansible_kernel if ansible_os_family == 'RedHat' else 'linux-headers-' + ansible_kernel }}"
-    _issue: >-
-      Kernel headers package '{{ _pkg }}' is NOT installed. The DKMS build
-      and/or out-of-tree module compile will fail. Install it from your
-      OS update process before running this role.
+    _issue: "Kernel headers package '{{ _pkg }}' is NOT installed. The DKMS build and/or out-of-tree module compile will fail. Install it from your OS update process before running this role."
   when:
     - solarflare_action in ['driver', 'onload', 'both', 'all', 'rebuild']
     - _sfc_hdr_check.rc | default(0) != 0
@@ -214,10 +166,7 @@
   ansible.builtin.set_fact:
     solarflare_compat_issues: "{{ solarflare_compat_issues + [_issue] }}"
   vars:
-    _issue: >-
-      gcc and/or make are not available. Driver / Onload compile will fail.
-      Install build essentials (Development Tools group on RHEL,
-      build-essential on Debian).
+    _issue: "gcc and/or make are not available. Driver / Onload compile will fail. Install build essentials (Development Tools group on RHEL, build-essential on Debian)."
   when:
     - solarflare_action in ['driver', 'onload', 'both', 'all', 'rebuild']
     - _sfc_toolchain.rc | default(0) != 0
@@ -231,10 +180,7 @@
   ansible.builtin.set_fact:
     solarflare_compat_warnings: "{{ solarflare_compat_warnings + [_w] }}"
   vars:
-    _w: >-
-      Target driver version {{ solarflare_resolved.driver.version }} is the
-      same as currently installed. Run will be a no-op unless DKMS rebuild
-      is required for a new kernel.
+    _w: "Target driver version {{ solarflare_resolved.driver.version }} is the same as currently installed. Run will be a no-op unless DKMS rebuild is required for a new kernel."
   when:
     - solarflare_action in ['driver', 'both', 'all']
     - solarflare_resolved.driver.version | length > 0
@@ -244,11 +190,7 @@
   ansible.builtin.set_fact:
     solarflare_compat_warnings: "{{ solarflare_compat_warnings + [_w] }}"
   vars:
-    _w: >-
-      Onload {{ solarflare_onload_version_before }} is installed but
-      solarflare_action='{{ solarflare_action }}' does not touch it. After a
-      driver change, Onload may need to be rebuilt — consider running with
-      action='all' or 'rebuild'.
+    _w: "Onload {{ solarflare_onload_version_before }} is installed but solarflare_action='{{ solarflare_action }}' does not touch it. After a driver change, Onload may need to be rebuilt — consider running with action='all' or 'rebuild'."
   when:
     - solarflare_action in ['driver', 'both']
     - solarflare_onload_installed | default(false) | bool
@@ -271,10 +213,7 @@
 
 - name: "Compat — STOP if any blocking issue was found"
   ansible.builtin.fail:
-    msg: >-
-      Pre-flight compatibility check found {{ solarflare_compat_issues | length }}
-      blocking issue(s). See the failures listed above. Refusing to proceed.
-      Override with solarflare_compat_strict=false to downgrade to warnings.
+    msg: "Pre-flight compatibility check found {{ solarflare_compat_issues | length }} blocking issue(s). See the failures listed above. Refusing to proceed. Override with solarflare_compat_strict=false to downgrade to warnings."
   when:
     - solarflare_compat_issues | length > 0
     - solarflare_compat_strict | default(true) | bool

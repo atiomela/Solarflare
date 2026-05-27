@@ -18,9 +18,7 @@
 - name: "Prepare — set OS-specific names"
   ansible.builtin.set_fact:
     solarflare_pkg_ext: "{{ 'rpm' if ansible_os_family == 'RedHat' else 'deb' }}"
-    solarflare_initramfs_path_tpl: >-
-      {{ '/boot/initramfs-{kver}.img' if ansible_os_family == 'RedHat'
-         else '/boot/initrd.img-{kver}' }}
+    solarflare_initramfs_path_tpl: "{{ '/boot/initramfs-{kver}.img' if ansible_os_family == 'RedHat' else '/boot/initrd.img-{kver}' }}"
 
 - name: "Prepare — enumerate installed kernels (RedHat)"
   ansible.builtin.shell:
@@ -42,10 +40,7 @@
 
 - name: "Prepare — set kernel facts"
   ansible.builtin.set_fact:
-    solarflare_installed_kernels: >-
-      {{ (_sfc_kernels_rh.stdout_lines | default([]))
-         if ansible_os_family == 'RedHat'
-         else (_sfc_kernels_deb.stdout_lines | default([])) }}
+    solarflare_installed_kernels: "{{ (_sfc_kernels_rh.stdout_lines | default([])) if ansible_os_family == 'RedHat' else (_sfc_kernels_deb.stdout_lines | default([])) }}"
     solarflare_running_kernel: "{{ ansible_kernel }}"
 
 - name: "Prepare — backup current initramfs for the running kernel"
@@ -79,16 +74,12 @@
 
 - name: "Prepare — save list for rollback"
   ansible.builtin.set_fact:
-    solarflare_previous_pkgs: >-
-      {{ (_sfc_pkgs_rh.stdout_lines | default([]))
-         if ansible_os_family == 'RedHat'
-         else (_sfc_pkgs_deb.stdout_lines | default([])) }}
+    solarflare_previous_pkgs: "{{ (_sfc_pkgs_rh.stdout_lines | default([])) if ansible_os_family == 'RedHat' else (_sfc_pkgs_deb.stdout_lines | default([])) }}"
 
 # --- Stage driver package -----------------------------------------------------
 - name: "Prepare — derive DRIVER repo URL when matrix has pkg_filename but no explicit url (flat layout)"
   ansible.builtin.set_fact:
-    _sfc_driver_repo_url: >-
-      {{ solarflare_repo_base_url }}/{{ solarflare_repo_os_dir | trim }}/{{ solarflare_resolved.driver.pkg_filename }}
+    _sfc_driver_repo_url: "{{ solarflare_repo_base_url }}/{{ solarflare_repo_os_dir | trim }}/{{ solarflare_resolved.driver.pkg_filename }}"
   when:
     - solarflare_action in ['driver', 'both', 'all', 'rebuild']
     - solarflare_resolved.driver.url | length == 0
@@ -96,10 +87,7 @@
 
 - name: "Prepare — pick effective driver URL (explicit url wins, else templated)"
   ansible.builtin.set_fact:
-    solarflare_driver_effective_url: >-
-      {{ solarflare_resolved.driver.url
-         if solarflare_resolved.driver.url | length > 0
-         else (_sfc_driver_repo_url | default('')) }}
+    solarflare_driver_effective_url: "{{ solarflare_resolved.driver.url if solarflare_resolved.driver.url | length > 0 else (_sfc_driver_repo_url | default('')) }}"
   when: solarflare_action in ['driver', 'both', 'all', 'rebuild']
 
 - name: "Prepare — download DRIVER package from the repo (HTTP Basic auth)"
@@ -129,11 +117,7 @@
 
 - name: "Prepare — resolve on-target DRIVER package path"
   ansible.builtin.set_fact:
-    solarflare_driver_pkg_path: >-
-      {{ solarflare_tmp_dir }}/{{
-        (solarflare_driver_effective_url
-         if solarflare_driver_effective_url | default('') | length > 0
-         else solarflare_resolved.driver.src) | basename }}
+    solarflare_driver_pkg_path: "{{ solarflare_tmp_dir }}/{{ (solarflare_driver_effective_url if solarflare_driver_effective_url | default('') | length > 0 else solarflare_resolved.driver.src) | basename }}"
   when:
     - solarflare_action in ['driver', 'both', 'all', 'rebuild']
     - (solarflare_driver_effective_url | default('') | length > 0) or
@@ -141,12 +125,7 @@
 
 - name: "Prepare — fail if driver requested but no package resolved"
   ansible.builtin.fail:
-    msg: >-
-      Driver update requested but no package could be resolved.
-      Either set solarflare_driver_pkg_src/_url or add an entry to
-      solarflare_compat_matrix for kernel={{ ansible_kernel }},
-      os_family={{ ansible_os_family }}.
-      See source: {{ solarflare_resolved.driver.source | default('(none)') }}
+    msg: "Driver update requested but no package could be resolved. Either set solarflare_driver_pkg_src/_url or add an entry to solarflare_compat_matrix for kernel={{ ansible_kernel }}, os_family={{ ansible_os_family }}. See source: {{ solarflare_resolved.driver.source | default('(none)') }}"
   when:
     - solarflare_action in ['driver', 'both', 'all']
     - solarflare_driver_pkg_path is not defined
@@ -192,13 +171,7 @@
 
 - name: "Prepare — build the list of on-target Onload package paths"
   ansible.builtin.set_fact:
-    solarflare_onload_pkg_paths: >-
-      {{ (solarflare_onload_package_set | default([])
-          | selectattr('filename', 'ne', '') | list
-          | map(attribute='filename')
-          | map('regex_replace', '^', solarflare_tmp_dir ~ '/') | list)
-         + ([solarflare_tmp_dir ~ '/' ~ (solarflare_resolved.onload.src | basename)]
-            if solarflare_resolved.onload.src | length > 0 else []) }}
+    solarflare_onload_pkg_paths: "{{ (solarflare_onload_package_set | default([]) | selectattr('filename', 'ne', '') | list | map(attribute='filename') | map('regex_replace', '^', solarflare_tmp_dir ~ '/') | list) + ([solarflare_tmp_dir ~ '/' ~ (solarflare_resolved.onload.src | basename)] if solarflare_resolved.onload.src | length > 0 else []) }}"
   when: solarflare_action in ['onload', 'all', 'rebuild']
 
 - name: "Prepare — primary Onload package path (first in the set; kept for legacy refs)"
@@ -212,9 +185,7 @@
 
 - name: "Prepare — fail if onload requested but no package resolved"
   ansible.builtin.fail:
-    msg: >-
-      Onload update requested but no package could be resolved.
-      See source: {{ solarflare_resolved.onload.source | default('(none)') }}
+    msg: "Onload update requested but no package could be resolved. See source: {{ solarflare_resolved.onload.source | default('(none)') }}"
   when:
     - solarflare_action in ['onload', 'all']
     - solarflare_onload_pkg_path is not defined
@@ -230,10 +201,7 @@
 
 - name: "Prepare — fail if firmware requested but image missing"
   ansible.builtin.fail:
-    msg: >-
-      Firmware update requested but image is missing.
-      Expected at: {{ solarflare_resolved.firmware.image | default('(unset)') }}
-      Download from: {{ solarflare_resolved.firmware.source | default('(none)') }}
+    msg: "Firmware update requested but image is missing. Expected at: {{ solarflare_resolved.firmware.image | default('(unset)') }} Download from: {{ solarflare_resolved.firmware.source | default('(none)') }}"
   when:
     - solarflare_action in ['firmware', 'both', 'all']
     - (solarflare_resolved.firmware.image | length == 0)
