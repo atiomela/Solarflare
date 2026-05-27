@@ -127,7 +127,7 @@
           exit 0
         fi
       fi
-      printf 'source=none version=\n'
+      printf 'source=none version=none\n'
     executable: /bin/bash
   register: _sfc_onload_probe
   changed_when: false
