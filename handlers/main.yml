@@ -1,0 +1,4 @@
+---
+- name: "solarflare-driver-installed"
+  ansible.builtin.debug:
+    msg: "New Solarflare driver RPM installed; initramfs regeneration will follow."

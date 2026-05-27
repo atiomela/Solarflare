@@ -1,0 +1,83 @@
+---
+# =============================================================================
+# solarflare_update — main entry point
+# =============================================================================
+# Flow:
+#   1. Detect NIC, set facts (always).
+#   2. Resolve target versions from matrix and/or manual overrides (always).
+#   3. If no NIC → skip everything else.
+#   4. Prepare workspace under /tmp + stage packages (OS-aware).
+#   5. Dispatch to driver / onload / firmware tasks per solarflare_action.
+
+- name: "Detect Solarflare hardware and set facts"
+  ansible.builtin.import_tasks: detect.yml
+  tags: [solarflare, solarflare_detect, always]
+
+- name: "Resolve target versions (matrix + manual overrides)"
+  ansible.builtin.import_tasks: resolve_versions.yml
+  tags: [solarflare, solarflare_resolve, always]
+
+- name: "Skip role — no Solarflare NIC present"
+  ansible.builtin.debug:
+    msg: "No Solarflare NIC detected on {{ inventory_hostname }} — nothing to do."
+  when: not solarflare_present | bool
+
+- name: "Assert supported OS family"
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family in ['RedHat', 'Debian']
+    fail_msg: "Unsupported OS family: {{ ansible_os_family }}. Role supports RedHat and Debian families."
+  when:
+    - solarflare_present | bool
+    - solarflare_action in ['driver', 'firmware', 'onload', 'both', 'all', 'rebuild']
+
+- name: "Prepare workspace and stage packages"
+  ansible.builtin.import_tasks: prepare.yml
+  when:
+    - solarflare_present | bool
+    - solarflare_action in ['driver', 'firmware', 'onload', 'both', 'all', 'rebuild']
+  tags: [solarflare]
+
+- name: "Pre-flight compatibility checks (driver/firmware/onload vs kernel)"
+  ansible.builtin.import_tasks: check_compat.yml
+  when:
+    - solarflare_present | bool
+    - solarflare_action in ['driver', 'firmware', 'onload', 'both', 'all', 'rebuild']
+  tags: [solarflare, solarflare_compat]
+
+- name: "Rebuild driver (and Onload if present) for the running kernel"
+  ansible.builtin.import_tasks: rebuild.yml
+  when:
+    - solarflare_present | bool
+    - solarflare_action == 'rebuild'
+  tags: [solarflare, solarflare_rebuild]
+
+- name: "Update Solarflare kernel driver"
+  ansible.builtin.import_tasks: driver_update.yml
+  when:
+    - solarflare_present | bool
+    - solarflare_action in ['driver', 'both', 'all']
+  tags: [solarflare, solarflare_driver]
+
+- name: "Update Onload"
+  ansible.builtin.import_tasks: onload_update.yml
+  when:
+    - solarflare_present | bool
+    - solarflare_action in ['onload', 'all']
+  tags: [solarflare, solarflare_onload]
+
+- name: "Update Solarflare firmware"
+  ansible.builtin.import_tasks: firmware_update.yml
+  when:
+    - solarflare_present | bool
+    - solarflare_action in ['firmware', 'both', 'all']
+  tags: [solarflare, solarflare_firmware]
+
+- name: "Show final state"
+  ansible.builtin.debug:
+    msg:
+      - "Interfaces             : {{ solarflare_interfaces | default([]) }}"
+      - "Driver  before / after : {{ solarflare_driver_version_before | default('n/a') }} → {{ solarflare_driver_version_after | default('unchanged') }}"
+      - "Firmware before / after: {{ solarflare_firmware_version_before | default('n/a') }} → {{ solarflare_firmware_version_after | default('unchanged') }}"
+      - "Onload  before / after : {{ solarflare_onload_version_before | default('n/a') }} → {{ solarflare_onload_version_after | default('unchanged') }}"
+  when: solarflare_present | bool

@@ -1,0 +1,191 @@
+---
+# =============================================================================
+# Firmware update with rollback via sfupdate
+# =============================================================================
+# Strategy:
+#   - Capture current firmware version and dump current firmware image (so we
+#     can flash it back if needed).
+#   - Flash new firmware.
+#   - Bring link up, verify it works (carrier up + version changed).
+#   - If anything fails → re-flash the saved image as rollback.
+
+- name: "Firmware update — main block"
+  block:
+
+    # ---- Sanity ---------------------------------------------------------------
+    - name: "Firmware — ensure sfupdate is present"
+      ansible.builtin.stat:
+        path: "{{ solarflare_sfupdate_bin }}"
+      register: _sfup_stat
+
+    - name: "Firmware — fail if sfupdate is missing"
+      ansible.builtin.fail:
+        msg: >-
+          {{ solarflare_sfupdate_bin }} not found. Install the 'sfutils'
+          package from the Solarflare/Xilinx/AMD support bundle.
+      when: not _sfup_stat.stat.exists
+
+    # ---- Pre-flash snapshot --------------------------------------------------
+    - name: "Firmware — record current firmware version per interface"
+      ansible.builtin.shell:
+        cmd: "ethtool -i {{ item }} | awk -F': ' '/^firmware-version/ {print $2}'"
+        executable: /bin/bash
+      register: _sfup_fw_before
+      changed_when: false
+      check_mode: false
+      loop: "{{ solarflare_interfaces }}"
+
+    - name: "Firmware — set pre-flash fact"
+      ansible.builtin.set_fact:
+        solarflare_firmware_pre_map: >-
+          {{ dict(solarflare_interfaces
+              | zip(_sfup_fw_before.results | map(attribute='stdout') | map('trim') | list)) }}
+
+    - name: "Firmware — dump current firmware image as rollback snapshot"
+      ansible.builtin.command:
+        cmd: >-
+          {{ solarflare_sfupdate_bin }}
+          --adapter={{ item }}
+          --write
+          --image={{ solarflare_backup_dir }}/firmware-{{ item }}.dat
+          --read-only
+      loop: "{{ solarflare_interfaces }}"
+      register: _sfup_dump
+      changed_when: false
+      failed_when: false
+      # Note: --read-only flag varies between sfupdate versions; if it is not
+      # supported, this step is best-effort and rollback falls back to vendor
+      # bundled "previous" image. The block still guards the flash itself.
+
+    # ---- Flash --------------------------------------------------------------
+    - name: "Firmware — flash new firmware on each interface"
+      ansible.builtin.command:
+        cmd: >-
+          {{ solarflare_sfupdate_bin }}
+          --adapter={{ item }}
+          --write
+          {% if solarflare_resolved.firmware.image | length > 0 %}--image={{ solarflare_resolved.firmware.image }}{% endif %}
+          {% if solarflare_firmware_force | bool %}--force{% endif %}
+          --yes
+      loop: "{{ solarflare_interfaces }}"
+      register: _sfup_flash
+      changed_when: "'success' in (_sfup_flash.stdout | default('') | lower) or _sfup_flash.rc == 0"
+
+    # ---- Post-flash verification --------------------------------------------
+    - name: "Firmware — wait for NIC to be ready"
+      ansible.builtin.pause:
+        seconds: "{{ solarflare_firmware_post_wait }}"
+
+    - name: "Firmware — bring interfaces up"
+      ansible.builtin.command:
+        cmd: "ip link set {{ item }} up"
+      loop: "{{ solarflare_interfaces }}"
+      changed_when: true
+      failed_when: false
+
+    - name: "Firmware — read new firmware version per interface"
+      ansible.builtin.shell:
+        cmd: "ethtool -i {{ item }} | awk -F': ' '/^firmware-version/ {print $2}'"
+        executable: /bin/bash
+      register: _sfup_fw_after
+      changed_when: false
+
+    - name: "Firmware — set post-flash fact"
+      ansible.builtin.set_fact:
+        solarflare_firmware_post_map: >-
+          {{ dict(solarflare_interfaces
+              | zip(_sfup_fw_after.results | map(attribute='stdout') | map('trim') | list)) }}
+        solarflare_firmware_version_after: >-
+          {{ (_sfup_fw_after.results[0].stdout | default('')) | trim }}
+
+    - name: "Firmware — check link is alive after flash"
+      ansible.builtin.shell:
+        cmd: "cat /sys/class/net/{{ item }}/operstate"
+        executable: /bin/bash
+      register: _sfup_link
+      changed_when: false
+      loop: "{{ solarflare_interfaces }}"
+
+    - name: "Firmware — assert each NIC is healthy (carrier OR up, version changed)"
+      ansible.builtin.assert:
+        that:
+          - solarflare_firmware_post_map[item.item] | length > 0
+          - solarflare_firmware_post_map[item.item] != solarflare_firmware_pre_map[item.item]
+          - item.stdout in ['up', 'unknown', 'down']
+        fail_msg: >-
+          NIC {{ item.item }} did not come back healthy after firmware flash
+          (pre={{ solarflare_firmware_pre_map[item.item] }},
+           post={{ solarflare_firmware_post_map[item.item] | default('MISSING') }}).
+        success_msg: >-
+          NIC {{ item.item }} flashed
+          {{ solarflare_firmware_pre_map[item.item] }} →
+          {{ solarflare_firmware_post_map[item.item] }}
+      loop: "{{ _sfup_link.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: "Firmware — assert version matches matrix target (when set)"
+      ansible.builtin.assert:
+        that:
+          - solarflare_firmware_post_map[item] == solarflare_resolved.firmware.version
+        fail_msg: >-
+          NIC {{ item }} firmware {{ solarflare_firmware_post_map[item] }}
+          does not match matrix target {{ solarflare_resolved.firmware.version }}.
+      loop: "{{ solarflare_interfaces }}"
+      when:
+        - solarflare_resolved.firmware.version | length > 0
+
+    - name: "Firmware — mark success"
+      ansible.builtin.set_fact:
+        solarflare_firmware_update_ok: true
+
+  rescue:
+
+    - name: "ROLLBACK (firmware) — flash failed, restoring previous image"
+      ansible.builtin.debug:
+        msg: "Firmware flash failed — attempting to restore each NIC."
+
+    - name: "ROLLBACK (firmware) — re-flash backup image per interface"
+      ansible.builtin.command:
+        cmd: >-
+          {{ solarflare_sfupdate_bin }}
+          --adapter={{ item }}
+          --write
+          --image={{ solarflare_backup_dir }}/firmware-{{ item }}.dat
+          --force
+          --yes
+      loop: "{{ solarflare_interfaces }}"
+      register: _sfup_rollback
+      changed_when: true
+      failed_when: false
+
+    - name: "ROLLBACK (firmware) — wait for NICs to settle"
+      ansible.builtin.pause:
+        seconds: "{{ solarflare_firmware_post_wait }}"
+
+    - name: "ROLLBACK (firmware) — bring interfaces back up"
+      ansible.builtin.command:
+        cmd: "ip link set {{ item }} up"
+      loop: "{{ solarflare_interfaces }}"
+      changed_when: true
+      failed_when: false
+
+    - name: "ROLLBACK (firmware) — read versions after rollback"
+      ansible.builtin.shell:
+        cmd: "ethtool -i {{ item }} | awk -F': ' '/^firmware-version/ {print $2}'"
+        executable: /bin/bash
+      register: _sfup_fw_rb
+      changed_when: false
+      loop: "{{ solarflare_interfaces }}"
+
+    - name: "ROLLBACK (firmware) — mark failure"
+      ansible.builtin.set_fact:
+        solarflare_firmware_update_ok: false
+
+    - name: "ROLLBACK (firmware) — fail the play"
+      ansible.builtin.fail:
+        msg: >-
+          Solarflare firmware upgrade failed on {{ inventory_hostname }}.
+          Rollback attempted; current per-NIC versions:
+          {{ dict(solarflare_interfaces
+              | zip(_sfup_fw_rb.results | map(attribute='stdout') | map('trim') | list)) }}

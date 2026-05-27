@@ -1,0 +1,240 @@
+---
+# =============================================================================
+# Prepare workspace and stage packages (OS-aware)
+# =============================================================================
+
+- name: "Prepare — create tmp working directory"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ solarflare_tmp_dir }}"
+    - "{{ solarflare_backup_dir }}"
+
+# --- Per-OS naming -----------------------------------------------------------
+- name: "Prepare — set OS-specific names"
+  ansible.builtin.set_fact:
+    solarflare_pkg_ext: "{{ 'rpm' if ansible_os_family == 'RedHat' else 'deb' }}"
+    solarflare_initramfs_path_tpl: >-
+      {{ '/boot/initramfs-{kver}.img' if ansible_os_family == 'RedHat'
+         else '/boot/initrd.img-{kver}' }}
+
+- name: "Prepare — enumerate installed kernels (RedHat)"
+  ansible.builtin.shell:
+    cmd: "rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\\n' | sort -u"
+    executable: /bin/bash
+  register: _sfc_kernels_rh
+  changed_when: false
+  check_mode: false
+  when: ansible_os_family == 'RedHat'
+
+- name: "Prepare — enumerate installed kernels (Debian)"
+  ansible.builtin.shell:
+    cmd: "dpkg-query -W -f='${Package}\\n' 'linux-image-[0-9]*' 2>/dev/null | sed 's/^linux-image-//' | sort -u"
+    executable: /bin/bash
+  register: _sfc_kernels_deb
+  changed_when: false
+  check_mode: false
+  when: ansible_os_family == 'Debian'
+
+- name: "Prepare — set kernel facts"
+  ansible.builtin.set_fact:
+    solarflare_installed_kernels: >-
+      {{ (_sfc_kernels_rh.stdout_lines | default([]))
+         if ansible_os_family == 'RedHat'
+         else (_sfc_kernels_deb.stdout_lines | default([])) }}
+    solarflare_running_kernel: "{{ ansible_kernel }}"
+
+- name: "Prepare — backup current initramfs for the running kernel"
+  ansible.builtin.copy:
+    src: "{{ solarflare_initramfs_path_tpl | replace('{kver}', ansible_kernel) }}"
+    dest: "{{ solarflare_backup_dir }}/initramfs-{{ ansible_kernel }}.bak"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  when: solarflare_action in ['driver', 'both', 'all', 'rebuild']
+
+# --- Record currently-installed SFC packages (for rollback) ------------------
+- name: "Prepare — list installed SFC packages (RedHat)"
+  ansible.builtin.shell:
+    cmd: "rpm -qa | grep -E 'kernel-module-sfc|^sfc-|^onload' || true"
+    executable: /bin/bash
+  register: _sfc_pkgs_rh
+  changed_when: false
+  check_mode: false
+  when: ansible_os_family == 'RedHat'
+
+- name: "Prepare — list installed SFC packages (Debian)"
+  ansible.builtin.shell:
+    cmd: "dpkg-query -W -f='${Package}=${Version}\\n' 2>/dev/null | grep -E '^(sfc-dkms|onload|openonload)=' || true"
+    executable: /bin/bash
+  register: _sfc_pkgs_deb
+  changed_when: false
+  check_mode: false
+  when: ansible_os_family == 'Debian'
+
+- name: "Prepare — save list for rollback"
+  ansible.builtin.set_fact:
+    solarflare_previous_pkgs: >-
+      {{ (_sfc_pkgs_rh.stdout_lines | default([]))
+         if ansible_os_family == 'RedHat'
+         else (_sfc_pkgs_deb.stdout_lines | default([])) }}
+
+# --- Stage driver package -----------------------------------------------------
+- name: "Prepare — derive DRIVER repo URL when matrix has pkg_filename but no explicit url (flat layout)"
+  ansible.builtin.set_fact:
+    _sfc_driver_repo_url: >-
+      {{ solarflare_repo_base_url }}/{{ solarflare_repo_os_dir | trim }}/{{ solarflare_resolved.driver.pkg_filename }}
+  when:
+    - solarflare_action in ['driver', 'both', 'all', 'rebuild']
+    - solarflare_resolved.driver.url | length == 0
+    - solarflare_resolved.driver.pkg_filename | default('') | length > 0
+
+- name: "Prepare — pick effective driver URL (explicit url wins, else templated)"
+  ansible.builtin.set_fact:
+    solarflare_driver_effective_url: >-
+      {{ solarflare_resolved.driver.url
+         if solarflare_resolved.driver.url | length > 0
+         else (_sfc_driver_repo_url | default('')) }}
+  when: solarflare_action in ['driver', 'both', 'all', 'rebuild']
+
+- name: "Prepare — download DRIVER package from the repo (HTTP Basic auth)"
+  ansible.builtin.get_url:
+    url: "{{ solarflare_driver_effective_url }}"
+    dest: "{{ solarflare_tmp_dir }}/{{ solarflare_driver_effective_url | basename }}"
+    url_username: "{{ solarflare_repo_user }}"
+    url_password: "{{ solarflare_repo_pass }}"
+    force_basic_auth: "{{ solarflare_repo_force_basic_auth | bool }}"
+    validate_certs: "{{ solarflare_repo_validate_certs | bool }}"
+    mode: "0600"
+    force: true
+  when:
+    - solarflare_action in ['driver', 'both', 'all', 'rebuild']
+    - solarflare_driver_effective_url | default('') | length > 0
+
+- name: "Prepare — copy DRIVER package from controller (manual override path)"
+  ansible.builtin.copy:
+    src: "{{ solarflare_resolved.driver.src }}"
+    dest: "{{ solarflare_tmp_dir }}/{{ solarflare_resolved.driver.src | basename }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - solarflare_action in ['driver', 'both', 'all', 'rebuild']
+    - solarflare_resolved.driver.src | length > 0
+
+- name: "Prepare — resolve on-target DRIVER package path"
+  ansible.builtin.set_fact:
+    solarflare_driver_pkg_path: >-
+      {{ solarflare_tmp_dir }}/{{
+        (solarflare_driver_effective_url
+         if solarflare_driver_effective_url | default('') | length > 0
+         else solarflare_resolved.driver.src) | basename }}
+  when:
+    - solarflare_action in ['driver', 'both', 'all', 'rebuild']
+    - (solarflare_driver_effective_url | default('') | length > 0) or
+      (solarflare_resolved.driver.src | length > 0)
+
+- name: "Prepare — fail if driver requested but no package resolved"
+  ansible.builtin.fail:
+    msg: >-
+      Driver update requested but no package could be resolved.
+      Either set solarflare_driver_pkg_src/_url or add an entry to
+      solarflare_compat_matrix for kernel={{ ansible_kernel }},
+      os_family={{ ansible_os_family }}.
+      See source: {{ solarflare_resolved.driver.source | default('(none)') }}
+  when:
+    - solarflare_action in ['driver', 'both', 'all']
+    - solarflare_driver_pkg_path is not defined
+
+# In rebuild mode, missing package is OK if DKMS will take over — rebuild.yml
+# checks DKMS first and only falls back to package-install if needed.
+
+# --- Stage Onload PACKAGE SET (multi-package install) -----------------------
+# Downloads every package in solarflare_onload_package_set from the templated
+# repo URL using HTTP Basic auth. Optional packages with no resolved filename
+# are silently skipped; required packages with no filename trigger the "fail
+# if no package resolved" guard below.
+
+- name: "Prepare — download Onload package set from the repo (HTTP Basic auth)"
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "{{ solarflare_tmp_dir }}/{{ item.filename }}"
+    url_username: "{{ solarflare_repo_user }}"
+    url_password: "{{ solarflare_repo_pass }}"
+    force_basic_auth: "{{ solarflare_repo_force_basic_auth | bool }}"
+    validate_certs: "{{ solarflare_repo_validate_certs | bool }}"
+    mode: "0600"
+    force: true
+  loop: "{{ solarflare_onload_package_set | default([]) }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.filename }})"
+  when:
+    - solarflare_action in ['onload', 'all', 'rebuild']
+    - item.url | length > 0
+    - item.filename | length > 0
+  no_log: false   # filenames are not secret; auth is sent via *_username/*_password
+
+- name: "Prepare — copy ONLOAD package from controller (manual override path)"
+  ansible.builtin.copy:
+    src: "{{ solarflare_resolved.onload.src }}"
+    dest: "{{ solarflare_tmp_dir }}/{{ solarflare_resolved.onload.src | basename }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - solarflare_action in ['onload', 'all', 'rebuild']
+    - solarflare_resolved.onload.src | length > 0
+
+- name: "Prepare — build the list of on-target Onload package paths"
+  ansible.builtin.set_fact:
+    solarflare_onload_pkg_paths: >-
+      {{ (solarflare_onload_package_set | default([])
+          | selectattr('filename', 'ne', '') | list
+          | map(attribute='filename')
+          | map('regex_replace', '^', solarflare_tmp_dir ~ '/') | list)
+         + ([solarflare_tmp_dir ~ '/' ~ (solarflare_resolved.onload.src | basename)]
+            if solarflare_resolved.onload.src | length > 0 else []) }}
+  when: solarflare_action in ['onload', 'all', 'rebuild']
+
+- name: "Prepare — primary Onload package path (first in the set; kept for legacy refs)"
+  ansible.builtin.set_fact:
+    solarflare_onload_pkg_path: "{{ solarflare_onload_pkg_paths[0] }}"
+  when:
+    - solarflare_action in ['onload', 'all', 'rebuild']
+    - solarflare_onload_pkg_paths | default([]) | length > 0
+# (Note: required-missing detection happens in resolve_versions.yml via a HEAD
+# probe; if a required package is absent the play fails BEFORE staging starts.)
+
+- name: "Prepare — fail if onload requested but no package resolved"
+  ansible.builtin.fail:
+    msg: >-
+      Onload update requested but no package could be resolved.
+      See source: {{ solarflare_resolved.onload.source | default('(none)') }}
+  when:
+    - solarflare_action in ['onload', 'all']
+    - solarflare_onload_pkg_path is not defined
+
+# --- Validate firmware image -------------------------------------------------
+- name: "Prepare — verify firmware image exists on target"
+  ansible.builtin.stat:
+    path: "{{ solarflare_resolved.firmware.image }}"
+  register: _sfc_fw_stat
+  when:
+    - solarflare_action in ['firmware', 'both', 'all']
+    - solarflare_resolved.firmware.image | length > 0
+
+- name: "Prepare — fail if firmware requested but image missing"
+  ansible.builtin.fail:
+    msg: >-
+      Firmware update requested but image is missing.
+      Expected at: {{ solarflare_resolved.firmware.image | default('(unset)') }}
+      Download from: {{ solarflare_resolved.firmware.source | default('(none)') }}
+  when:
+    - solarflare_action in ['firmware', 'both', 'all']
+    - (solarflare_resolved.firmware.image | length == 0)
+      or (not (_sfc_fw_stat.stat.exists | default(false)))

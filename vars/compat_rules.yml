@@ -1,0 +1,73 @@
+---
+# =============================================================================
+# Static compatibility rules for solarflare_update
+# =============================================================================
+# These rules express the documented constraints between driver / firmware /
+# Onload versions and the running kernel. They are USED BY check_compat.yml as
+# a pre-flight gate before any upgrade action.
+#
+# Override the whole file (or individual keys) in group_vars/ if Solarflare /
+# Xilinx / AMD publish updated support windows.
+#
+# Kernel ranges are major.minor; comparison uses Ansible's version test.
+# kernel_max="99.0" means "no upper bound currently known".
+
+# ---------------------------------------------------------------------------
+# Driver series → supported kernel range
+# Key is "major.minor" of the driver, e.g. 5.3 for sfc 5.3.14.1010
+# ---------------------------------------------------------------------------
+driver_kernel_support:
+  "4.15":
+    kernel_min: "2.6"
+    kernel_max: "4.19"
+    notes: "Legacy sfc 4.15.x — supports EL6/EL7-era kernels through Debian 10."
+  "5.3":
+    kernel_min: "3.10"
+    kernel_max: "6.14"
+    notes: "sfc 5.3.x — point releases (5.3.3/5.3.14/5.3.18) cover RHEL 7..10, Debian 10..13, Ubuntu 18..26."
+  "5.4":
+    kernel_min: "5.4"
+    kernel_max: "99.0"
+    notes: "sfc 5.4.x — placeholder for future series; no released version yet on the matrix."
+
+# ---------------------------------------------------------------------------
+# Onload major → supported kernel range
+# Key is the leading integer of the Onload version, e.g. 7, 8, 9.
+# ---------------------------------------------------------------------------
+onload_kernel_support:
+  "7":
+    kernel_min: "2.6"
+    kernel_max: "5.4"
+    notes: "Onload 7.x — last line supporting EL6 / Ubuntu 16.04 kernels."
+  "8":
+    kernel_min: "3.10"
+    kernel_max: "6.5"
+    notes: "Onload 8.x — does NOT support kernels < 3.10."
+  "9":
+    kernel_min: "5.15"
+    kernel_max: "99.0"
+    notes: "Onload 9.x — newest line; requires kernel >= 5.15."
+
+# ---------------------------------------------------------------------------
+# Onload major → supported driver series
+# Verified to load against the listed sfc series; loading against an
+# unlisted series is unsupported and rejected by the pre-flight check.
+# ---------------------------------------------------------------------------
+onload_driver_support:
+  "7":
+    driver_series: ["4.15"]
+  "8":
+    driver_series: ["5.3"]
+  "9":
+    driver_series: ["5.3", "5.4"]
+
+# ---------------------------------------------------------------------------
+# Firmware major → supported driver series
+# Older NIC firmware (6.x) only works with the 4.15 driver line; modern 8.x
+# firmware requires the 5.x driver line.
+# ---------------------------------------------------------------------------
+firmware_driver_support:
+  "6":
+    driver_series: ["4.15"]
+  "8":
+    driver_series: ["5.3", "5.4"]

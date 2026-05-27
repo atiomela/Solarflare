@@ -1,0 +1,333 @@
+---
+# =============================================================================
+# Resolve which driver / firmware / onload versions should be used
+# =============================================================================
+# Inputs:
+#   - solarflare_compat_matrix          (matrix of valid kernel→pkg combos)
+#   - solarflare_version_selection      (matrix | manual | auto)
+#   - solarflare_pin_release             (optional pin to a `release` key)
+#   - solarflare_driver_pkg_src/_url     (manual overrides)
+#   - solarflare_onload_pkg_src/_url
+#   - solarflare_firmware_image
+#
+# Outputs (set as facts):
+#   - solarflare_matrix_match   : full matrix entry that matched, or {}
+#   - solarflare_resolved       : flat dict with keys:
+#       driver: {version, pkg, url, src, source}
+#       firmware: {version, image, source}
+#       onload: {version, pkg, url, src, source}
+#   - solarflare_resolution_log : list of human-readable lines for the report
+
+# ---------------------------------------------------------------------------
+# 1. Pick the matching entry from the compatibility matrix
+# ---------------------------------------------------------------------------
+
+- name: "Resolve — filter matrix by OS family and (when set) pinned release"
+  ansible.builtin.set_fact:
+    _sfc_matrix_candidates: >-
+      {{ solarflare_compat_matrix
+         | selectattr('os_family', 'equalto', ansible_os_family)
+         | selectattr('release',
+                      'equalto' if (solarflare_pin_release | length) > 0
+                                 else 'defined',
+                      solarflare_pin_release)
+         | list }}
+
+- name: "Resolve — narrow by distribution major version when set on entries"
+  ansible.builtin.set_fact:
+    _sfc_matrix_candidates: >-
+      {{ _sfc_matrix_candidates
+         | rejectattr('distribution_major_version', 'defined')
+         | list
+         + _sfc_matrix_candidates
+         | selectattr('distribution_major_version', 'defined')
+         | selectattr('distribution_major_version',
+                      'equalto', ansible_distribution_major_version)
+         | list }}
+
+- name: "Resolve — narrow by distribution name when set on entries (Ubuntu vs Debian)"
+  ansible.builtin.set_fact:
+    _sfc_matrix_candidates: >-
+      {{ _sfc_matrix_candidates
+         | rejectattr('distribution', 'defined')
+         | list
+         + _sfc_matrix_candidates
+         | selectattr('distribution', 'defined')
+         | selectattr('distribution', 'equalto', ansible_distribution)
+         | list }}
+
+- name: "Resolve — pick the first entry whose kernel_regex matches the running kernel"
+  ansible.builtin.set_fact:
+    solarflare_matrix_match: >-
+      {{ (_sfc_matrix_candidates
+           | selectattr('kernel_regex', 'defined')
+           | selectattr('kernel_regex',
+                        'match', ansible_kernel)
+           | list
+           | first) | default({}) }}
+
+- name: "Resolve — warn if no matrix entry matched"
+  ansible.builtin.debug:
+    msg: >-
+      No solarflare_compat_matrix entry matches
+      os_family={{ ansible_os_family }},
+      distro_major={{ ansible_distribution_major_version }},
+      kernel={{ ansible_kernel }}.
+      Falling back to manual overrides (if any) and sources listed in defaults.
+  when: solarflare_matrix_match | length == 0
+
+# ---------------------------------------------------------------------------
+# 2. Build the resolved {driver, firmware, onload} dict
+# ---------------------------------------------------------------------------
+# Selection logic per component (manual override > matrix > empty):
+#   auto    : manual if non-empty, else matrix
+#   manual  : manual only (matrix ignored)
+#   matrix  : matrix only
+
+- name: "Resolve — assemble the effective version dict"
+  ansible.builtin.set_fact:
+    solarflare_resolved:
+      driver:
+        version: >-
+          {{ solarflare_matrix_match.driver.version
+             if (solarflare_version_selection != 'manual'
+                 and solarflare_matrix_match.driver is defined)
+             else '' }}
+        pkg_filename: >-
+          {{ solarflare_matrix_match.driver.pkg
+             if (solarflare_version_selection != 'manual'
+                 and solarflare_matrix_match.driver is defined)
+             else '' }}
+        src: >-
+          {{ solarflare_driver_pkg_src
+             if (solarflare_version_selection in ['manual', 'auto']
+                 and (solarflare_driver_pkg_src | length) > 0)
+             else '' }}
+        url: >-
+          {{ solarflare_driver_pkg_url
+             if (solarflare_version_selection in ['manual', 'auto']
+                 and (solarflare_driver_pkg_url | length) > 0)
+             else (solarflare_matrix_match.driver.url
+                   if (solarflare_version_selection != 'manual'
+                       and solarflare_matrix_match.driver is defined)
+                   else '') }}
+        source: >-
+          {{ solarflare_matrix_match.driver.source
+             if solarflare_matrix_match.driver is defined
+             else '' }}
+      firmware:
+        version: >-
+          {{ solarflare_matrix_match.firmware.version
+             if (solarflare_version_selection != 'manual'
+                 and solarflare_matrix_match.firmware is defined)
+             else '' }}
+        image: >-
+          {{ solarflare_firmware_image
+             if (solarflare_version_selection in ['manual', 'auto']
+                 and (solarflare_firmware_image | length) > 0)
+             else (solarflare_matrix_match.firmware.image
+                   if (solarflare_version_selection != 'manual'
+                       and solarflare_matrix_match.firmware is defined)
+                   else '') }}
+        source: >-
+          {{ solarflare_matrix_match.firmware.source
+             if solarflare_matrix_match.firmware is defined
+             else '' }}
+      onload:
+        version: >-
+          {{ solarflare_matrix_match.onload.version
+             if (solarflare_version_selection != 'manual'
+                 and solarflare_matrix_match.onload is defined)
+             else '' }}
+        pkg_filename: >-
+          {{ solarflare_matrix_match.onload.pkg
+             if (solarflare_version_selection != 'manual'
+                 and solarflare_matrix_match.onload is defined)
+             else '' }}
+        src: >-
+          {{ solarflare_onload_pkg_src
+             if (solarflare_version_selection in ['manual', 'auto']
+                 and (solarflare_onload_pkg_src | length) > 0)
+             else '' }}
+        url: >-
+          {{ solarflare_onload_pkg_url
+             if (solarflare_version_selection in ['manual', 'auto']
+                 and (solarflare_onload_pkg_url | length) > 0)
+             else (solarflare_matrix_match.onload.url
+                   if (solarflare_version_selection != 'manual'
+                       and solarflare_matrix_match.onload is defined)
+                   else '') }}
+        source: >-
+          {{ solarflare_matrix_match.onload.source
+             if solarflare_matrix_match.onload is defined
+             else '' }}
+
+# ---------------------------------------------------------------------------
+# 2b. Build the Onload package SET — multi-package install.
+#     Repo is FLAT: {base_url}/{os_dir}/{filename}.
+#     The set is derived from the matrix entry's `pkg:` filename by computing
+#     sibling filenames (onload-kmod-..., onload-devel-...) using the same
+#     version/release suffix. The repo is then probed with a HEAD request to
+#     decide whether each sibling actually exists.
+# ---------------------------------------------------------------------------
+
+- name: "Resolve — derive Onload sibling filenames from the main pkg filename"
+  ansible.builtin.set_fact:
+    _sfc_onload_candidates: |-
+      {% set m = solarflare_matrix_match.onload | default({}) %}
+      {% set main_pkg = m.pkg | default('') %}
+      {% set result = [{
+            'name': 'onload',
+            'filename': main_pkg,
+            'required': true,
+            'source': 'matrix.pkg'
+          }] if main_pkg | length > 0 else [] %}
+      {# Append explicit kmod / devel fields if the matrix entry sets them #}
+      {% if (m.kmod_pkg | default('')) | length > 0 %}
+        {% set _ = result.append({
+            'name': 'onload-kmod' if main_pkg.endswith('.rpm') else 'onload-dkms',
+            'filename': m.kmod_pkg,
+            'required': true,
+            'source': 'matrix.kmod_pkg'
+          }) %}
+      {% endif %}
+      {% if (m.devel_pkg | default('')) | length > 0 %}
+        {% set _ = result.append({
+            'name': 'onload-devel' if main_pkg.endswith('.rpm') else 'onload-dev',
+            'filename': m.devel_pkg,
+            'required': false,
+            'source': 'matrix.devel_pkg'
+          }) %}
+      {% endif %}
+      {# If auto-detect is on and a sibling wasn't already listed, derive it
+         from the main pkg filename by substituting the leading 'onload-' or
+         'onload_' prefix. Skip a sibling whose name already appears in result. #}
+      {% if solarflare_onload_autodetect_set | bool and main_pkg | length > 0 %}
+        {% set listed_names = result | map(attribute='name') | list %}
+        {% for sib in (solarflare_onload_sibling_suffixes[ansible_os_family] | default([])) %}
+          {% if sib.name not in listed_names %}
+            {% if main_pkg.endswith('.rpm') %}
+              {% set derived = main_pkg | regex_replace('^onload-', sib.name ~ '-') %}
+            {% else %}
+              {% set derived_first = main_pkg | regex_replace('^onload_', sib.name ~ '_') %}
+              {% set derived = derived_first | regex_replace('_amd64\.deb$', '_all.deb')
+                                if sib.name in ['onload-dkms'] else derived_first %}
+            {% endif %}
+            {% if derived != main_pkg %}
+              {% set _ = result.append({
+                  'name': sib.name,
+                  'filename': derived,
+                  'required': sib.required | default(false),
+                  'source': 'autodetect'
+                }) %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ result }}
+
+- name: "Resolve — assemble full URLs for each candidate (flat repo layout)"
+  ansible.builtin.set_fact:
+    _sfc_onload_candidates_with_urls: |-
+      {% set result = [] %}
+      {% set base = solarflare_repo_base_url ~ '/' ~ (solarflare_repo_os_dir | trim) ~ '/' %}
+      {% for c in _sfc_onload_candidates %}
+        {% set _ = result.append(c | combine({'url': base ~ c.filename})) %}
+      {% endfor %}
+      {{ result }}
+
+- name: "Resolve — probe the repo to see which onload packages actually exist"
+  ansible.builtin.uri:
+    url: "{{ item.url }}"
+    method: HEAD
+    url_username: "{{ solarflare_repo_user }}"
+    url_password: "{{ solarflare_repo_pass }}"
+    force_basic_auth: "{{ solarflare_repo_force_basic_auth | bool }}"
+    validate_certs: "{{ solarflare_repo_validate_certs | bool }}"
+    status_code: [200, 401, 403, 404]
+    timeout: 15
+  register: _sfc_onload_probe
+  loop: "{{ _sfc_onload_candidates_with_urls }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.filename }})"
+  changed_when: false
+  failed_when: false
+  when:
+    - solarflare_action in ['onload', 'all', 'rebuild']
+    - _sfc_onload_candidates_with_urls | length > 0
+
+- name: "Resolve — keep candidates that returned HTTP 200; flag required-missing"
+  ansible.builtin.set_fact:
+    solarflare_onload_package_set: |-
+      {% set kept = [] %}
+      {% set missing_required = [] %}
+      {% for r in (_sfc_onload_probe.results | default([])) %}
+        {% if (r.status | default(0)) == 200 %}
+          {% set _ = kept.append(r.item) %}
+        {% elif r.item.required | bool %}
+          {% set _ = missing_required.append(r.item) %}
+        {% endif %}
+      {% endfor %}
+      {{ kept }}
+    solarflare_onload_missing_required: |-
+      {% set missing = [] %}
+      {% for r in (_sfc_onload_probe.results | default([])) %}
+        {% if (r.status | default(0)) != 200 and r.item.required | bool %}
+          {% set _ = missing.append({'name': r.item.name, 'url': r.item.url, 'status': r.status | default('?')}) %}
+        {% endif %}
+      {% endfor %}
+      {{ missing }}
+  when: solarflare_action in ['onload', 'all', 'rebuild']
+
+- name: "Resolve — fail if a required Onload package was not found in the repo"
+  ansible.builtin.fail:
+    msg: >-
+      Required Onload package(s) not found in the repo:
+      {% for m in solarflare_onload_missing_required %}
+      - {{ m.name }}: {{ m.url }} (HTTP {{ m.status }})
+      {% endfor %}
+      Check solarflare_repo_base_url, solarflare_repo_os_dir, and the
+      filenames in the matrix entry.
+  when:
+    - solarflare_action in ['onload', 'all']
+    - solarflare_onload_missing_required | default([]) | length > 0
+
+# ---------------------------------------------------------------------------
+# 3. "Next manual update" report — always printed
+# ---------------------------------------------------------------------------
+
+- name: "Resolve — print resolution report"
+  ansible.builtin.debug:
+    msg:
+      - "===== Solarflare version resolution ====="
+      - "OS family / version : {{ ansible_os_family }} / {{ ansible_distribution_major_version }}"
+      - "Running kernel      : {{ ansible_kernel }}"
+      - "Matrix release used : {{ solarflare_matrix_match.release | default('(no match)') }}"
+      - "Selection mode      : {{ solarflare_version_selection }}"
+      - "----- Driver -----"
+      - "  target version : {{ solarflare_resolved.driver.version | default('(none)') }}"
+      - "  package        : {{ solarflare_resolved.driver.pkg_filename | default(solarflare_resolved.driver.src | basename) }}"
+      - "  url            : {{ solarflare_resolved.driver.url | default('(none)') }}"
+      - "  local src      : {{ solarflare_resolved.driver.src | default('(none)') }}"
+      - "  source page    : {{ solarflare_resolved.driver.source | default('(none)') }}"
+      - "----- Firmware -----"
+      - "  target version : {{ solarflare_resolved.firmware.version | default('(none)') }}"
+      - "  image          : {{ solarflare_resolved.firmware.image | default('(none)') }}"
+      - "  source page    : {{ solarflare_resolved.firmware.source | default('(none)') }}"
+      - "----- Onload -----"
+      - "  target version : {{ solarflare_resolved.onload.version | default('(none)') }}"
+      - "  package         : {{ solarflare_resolved.onload.pkg_filename | default(solarflare_resolved.onload.src | basename) }}"
+      - "  package set     : {{ solarflare_onload_package_set | default([]) | map(attribute='name') | join(', ') }}"
+      - "  url             : {{ solarflare_resolved.onload.url | default('(none)') }}"
+      - "  repo base url   : {{ solarflare_repo_base_url }}"
+      - "  local src       : {{ solarflare_resolved.onload.src | default('(none)') }}"
+      - "  source page     : {{ solarflare_resolved.onload.source | default('(none)') }}"
+      - "========================================="
+
+- name: "Resolve — print Onload package set (one entry per package)"
+  ansible.builtin.debug:
+    msg: "  {{ item.name | default('?') }} (required={{ item.required | default(false) }}) → {{ item.url | default('(no url)') }}"
+  loop: "{{ solarflare_onload_package_set | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  when: solarflare_onload_package_set | default([]) | length > 0

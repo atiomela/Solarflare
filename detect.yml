@@ -1,0 +1,156 @@
+---
+# =============================================================================
+# Detect Solarflare NICs and set facts
+# =============================================================================
+# Sets:
+#   solarflare_present                : bool
+#   solarflare_interfaces             : list of interface names bound to sfc
+#   solarflare_driver_version_before  : sfc driver version (running)
+#   solarflare_firmware_version_before: firmware version (from ethtool -i)
+
+- name: "Detect — scan PCI bus for Solarflare vendor ID (1924)"
+  ansible.builtin.shell:
+    cmd: "set -o pipefail; lspci -nn -d 1924: || true"
+    executable: /bin/bash
+  register: _sfc_lspci
+  changed_when: false
+  check_mode: false
+
+- name: "Detect — set solarflare_present fact"
+  ansible.builtin.set_fact:
+    solarflare_present: "{{ (_sfc_lspci.stdout | trim | length) > 0 }}"
+
+- name: "Detect — enumerate interfaces using the sfc driver"
+  ansible.builtin.shell:
+    cmd: |
+      set -u
+      shopt -s nullglob
+      for ifdir in /sys/class/net/*; do
+        [ -e "$ifdir/device/driver" ] || continue
+        drv_target=$(readlink -f "$ifdir/device/driver" 2>/dev/null) || continue
+        drv_name=${drv_target##*/}
+        if [ "$drv_name" = "sfc" ]; then
+          ifname=${ifdir##*/}
+          [ -n "$ifname" ] && printf '%s\n' "$ifname"
+        fi
+      done
+    executable: /bin/bash
+  register: _sfc_ifaces
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: solarflare_present | bool
+
+- name: "Detect — set solarflare_interfaces fact"
+  ansible.builtin.set_fact:
+    solarflare_interfaces: "{{ _sfc_ifaces.stdout_lines | default([]) }}"
+  when: solarflare_present | bool
+
+- name: "Detect — snapshot loaded kernel modules"
+  ansible.builtin.shell:
+    cmd: "lsmod | awk 'NR>1 {print $1}'"
+    executable: /bin/bash
+  register: _sfc_lsmod
+  changed_when: false
+  check_mode: false
+
+- name: "Detect — read driver and firmware versions via ethtool"
+  ansible.builtin.shell:
+    cmd: "ethtool -i {{ item }}"
+    executable: /bin/bash
+  loop: "{{ solarflare_interfaces | default([]) }}"
+  register: _sfc_ethtool
+  changed_when: false
+  check_mode: false
+  when:
+    - solarflare_present | bool
+    - solarflare_interfaces | default([]) | length > 0
+
+- name: "Detect — extract driver version (before)"
+  ansible.builtin.set_fact:
+    solarflare_driver_version_before: >-
+      {{ (_sfc_ethtool.results[0].stdout
+          | regex_search('version:\\s*(\\S+)', '\\1') | first)
+          if (_sfc_ethtool is defined and _sfc_ethtool.results | length > 0)
+          else 'unknown' }}
+  when:
+    - solarflare_present | bool
+    - _sfc_ethtool is defined
+    - _sfc_ethtool.results | default([]) | length > 0
+
+- name: "Detect — extract firmware version (before)"
+  ansible.builtin.set_fact:
+    solarflare_firmware_version_before: >-
+      {{ (_sfc_ethtool.results[0].stdout
+          | regex_search('firmware-version:\\s*(\\S+)', '\\1') | first)
+          if (_sfc_ethtool is defined and _sfc_ethtool.results | length > 0)
+          else 'unknown' }}
+  when:
+    - solarflare_present | bool
+    - _sfc_ethtool is defined
+    - _sfc_ethtool.results | default([]) | length > 0
+
+- name: "Detect — probe Onload version (module > CLI > RPM)"
+  ansible.builtin.shell:
+    cmd: |
+      set -u
+      # 1) Preferred: kernel module exposes its version in sysfs when loaded.
+      if [ -r /sys/module/onload/version ]; then
+        ver=$(cat /sys/module/onload/version 2>/dev/null)
+        if [ -n "$ver" ]; then
+          printf 'source=module version=%s\n' "$ver"
+          exit 0
+        fi
+      fi
+      # 2) onload CLI (installed by openonload userland).
+      if command -v onload >/dev/null 2>&1; then
+        ver=$(onload --version 2>/dev/null | awk '/^onload/ {print $2; exit}')
+        if [ -n "$ver" ]; then
+          printf 'source=cli version=%s\n' "$ver"
+          exit 0
+        fi
+      fi
+      # 3) modinfo — works even when the module is not loaded.
+      if command -v modinfo >/dev/null 2>&1; then
+        ver=$(modinfo -F version onload 2>/dev/null)
+        if [ -n "$ver" ]; then
+          printf 'source=modinfo version=%s\n' "$ver"
+          exit 0
+        fi
+      fi
+      # 4) RPM fallback.
+      if command -v rpm >/dev/null 2>&1; then
+        ver=$(rpm -q --qf '%{VERSION}-%{RELEASE}\n' openonload 2>/dev/null \
+              | grep -v 'not installed' | head -n1)
+        if [ -n "$ver" ]; then
+          printf 'source=rpm version=%s\n' "$ver"
+          exit 0
+        fi
+      fi
+      printf 'source=none version=\n'
+    executable: /bin/bash
+  register: _sfc_onload_probe
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: "Detect — parse Onload version output"
+  ansible.builtin.set_fact:
+    solarflare_onload_installed: >-
+      {{ (_sfc_onload_probe.stdout | regex_search('version=(\\S+)', '\\1') | first | default('')) | length > 0 }}
+    solarflare_onload_version_before: >-
+      {{ _sfc_onload_probe.stdout | regex_search('version=(\\S+)', '\\1') | first | default('') }}
+    solarflare_onload_source: >-
+      {{ _sfc_onload_probe.stdout | regex_search('source=(\\S+)', '\\1') | first | default('none') }}
+    solarflare_onload_loaded: "{{ 'onload' in (_sfc_lsmod.stdout_lines | default([])) }}"
+
+- name: "Detect — summary"
+  ansible.builtin.debug:
+    msg:
+      - "Solarflare present     : {{ solarflare_present }}"
+      - "Interfaces             : {{ solarflare_interfaces | default([]) }}"
+      - "Driver version (before): {{ solarflare_driver_version_before | default('n/a') }}"
+      - "Firmware (before)      : {{ solarflare_firmware_version_before | default('n/a') }}"
+      - "Onload installed       : {{ solarflare_onload_installed | default(false) }}"
+      - "Onload version (before): {{ solarflare_onload_version_before | default('n/a') }} (via {{ solarflare_onload_source | default('n/a') }})"
+      - "Onload module loaded   : {{ solarflare_onload_loaded | default(false) }}"

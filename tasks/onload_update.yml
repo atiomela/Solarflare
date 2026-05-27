@@ -1,0 +1,123 @@
+---
+# =============================================================================
+# Onload update with rollback — RedHat + Debian
+# =============================================================================
+
+- name: "Onload update — main block"
+  block:
+
+    - name: "Onload — stop services depending on it"
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - openonload
+        - onload
+      failed_when: false
+
+    - name: "Onload — unload module if loaded"
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - onload
+        - onload_cplane
+      failed_when: false
+
+    - name: "Onload — install package SET (RedHat) — all required + optional in one txn"
+      ansible.builtin.dnf:
+        name: "{{ solarflare_onload_pkg_paths }}"
+        state: present
+        disable_gpg_check: true
+        allow_downgrade: true
+      when:
+        - ansible_os_family == 'RedHat'
+        - solarflare_onload_pkg_paths | default([]) | length > 0
+
+    - name: "Onload — install package SET (Debian) — install each .deb in order"
+      ansible.builtin.apt:
+        deb: "{{ item }}"
+        state: present
+      loop: "{{ solarflare_onload_pkg_paths | default([]) }}"
+      when:
+        - ansible_os_family == 'Debian'
+        - solarflare_onload_pkg_paths | default([]) | length > 0
+
+    - name: "Onload — load module"
+      community.general.modprobe:
+        name: onload
+        state: present
+      failed_when: false
+
+    - name: "Onload — capture new version"
+      ansible.builtin.shell:
+        cmd: |
+          if [ -r /sys/module/onload/version ]; then
+            cat /sys/module/onload/version
+          elif command -v onload >/dev/null 2>&1; then
+            onload --version 2>/dev/null | awk '/^onload/ {print $2; exit}'
+          else
+            echo ""
+          fi
+        executable: /bin/bash
+      register: _sfc_onload_after
+      changed_when: false
+
+    - name: "Onload — set post-upgrade fact"
+      ansible.builtin.set_fact:
+        solarflare_onload_version_after: "{{ _sfc_onload_after.stdout | trim }}"
+
+    - name: "Onload — assert version changed (when Onload was installed before)"
+      ansible.builtin.assert:
+        that:
+          - solarflare_onload_version_after | length > 0
+          - solarflare_onload_version_after != solarflare_onload_version_before
+        fail_msg: "Onload version unchanged after upgrade ({{ solarflare_onload_version_before }} → {{ solarflare_onload_version_after }})."
+        success_msg: "Onload upgraded {{ solarflare_onload_version_before }} → {{ solarflare_onload_version_after }}"
+      when: solarflare_onload_installed | default(false) | bool
+
+    - name: "Onload — assert version matches matrix target (when set)"
+      ansible.builtin.assert:
+        that:
+          - solarflare_onload_version_after == solarflare_resolved.onload.version
+        fail_msg: "Onload {{ solarflare_onload_version_after }} ≠ target {{ solarflare_resolved.onload.version }}"
+      when:
+        - solarflare_resolved.onload.version | length > 0
+
+    - name: "Onload — flag success"
+      ansible.builtin.set_fact:
+        solarflare_onload_update_ok: true
+
+  rescue:
+
+    - name: "ROLLBACK (onload) — failed, attempting recovery"
+      ansible.builtin.debug:
+        msg: "Onload update failed."
+
+    - name: "ROLLBACK (onload) — remove ALL new packages in the set (RedHat)"
+      ansible.builtin.shell:
+        cmd: "rpm -e --nodeps $(rpm -qp '{{ item }}') || true"
+        executable: /bin/bash
+      loop: "{{ solarflare_onload_pkg_paths | default([]) | reverse | list }}"
+      when: ansible_os_family == 'RedHat'
+      failed_when: false
+      changed_when: true
+
+    - name: "ROLLBACK (onload) — remove ALL new packages in the set (Debian)"
+      ansible.builtin.shell:
+        cmd: |
+          pkg=$(dpkg-deb -f '{{ item }}' Package 2>/dev/null)
+          if [ -n "$pkg" ]; then apt-get remove --purge -y "$pkg" || true; fi
+        executable: /bin/bash
+      loop: "{{ solarflare_onload_pkg_paths | default([]) | reverse | list }}"
+      when: ansible_os_family == 'Debian'
+      failed_when: false
+      changed_when: true
+
+    - name: "ROLLBACK (onload) — flag failure"
+      ansible.builtin.set_fact:
+        solarflare_onload_update_ok: false
+
+    - name: "ROLLBACK (onload) — fail the play"
+      ansible.builtin.fail:
+        msg: "Onload upgrade failed on {{ inventory_hostname }}; package removed."

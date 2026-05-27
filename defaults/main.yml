@@ -1,0 +1,590 @@
+---
+# =============================================================================
+# Default variables for the solarflare_update role
+# =============================================================================
+# Overridable via group_vars / host_vars / extra-vars.
+
+# --- General behaviour --------------------------------------------------------
+# Default action assumes the OS / kernel has just been updated by some external
+# process (the role does NOT manage OS updates) and the SFC driver — and Onload
+# if it was previously installed — must be rebuilt or reinstalled against the
+# new running kernel.
+solarflare_action: "rebuild"
+# rebuild  : rebuild/reinstall driver (and Onload if installed) for running kernel — DEFAULT
+# none     : detection only — prints facts and "next manual update" report
+# driver   : full driver upgrade (matrix or manual package)
+# onload   : full Onload upgrade
+# firmware : NIC firmware flash via sfupdate
+# both     : driver + firmware
+# all      : driver + onload + firmware
+
+# In rebuild mode:
+#   - if the installed driver/onload is DKMS-packaged → trigger a rebuild
+#     against the running kernel (no new package needed)
+#   - else → reinstall the matrix-resolved package for the new kernel
+#   - Onload is only touched if it was already installed before the run
+#     (controlled by solarflare_rebuild_onload_if_present)
+solarflare_rebuild_onload_if_present: true
+
+# If true and a DKMS module status shows "installed" for the running kernel,
+# skip the rebuild step (nothing to do). Set to false to force a rebuild.
+solarflare_rebuild_skip_if_current: true
+
+solarflare_version_selection: "auto"
+# matrix | manual | auto
+
+# When true (default), pre-flight compatibility issues abort the play before
+# any module is unloaded. Set to false to demote them to warnings and proceed
+# at your own risk (useful when overriding the matrix knowingly).
+solarflare_compat_strict: true
+
+solarflare_pin_release: ""           # optional, pin to a `release:` entry name
+
+solarflare_update_all_kernels: false
+solarflare_reboot_after_driver: false
+solarflare_reboot_timeout: 600
+
+# --- Workspace ---------------------------------------------------------------
+solarflare_tmp_dir: "/tmp/solarflare_update"
+solarflare_backup_dir: "{{ solarflare_tmp_dir }}/backup"
+
+# --- MANUAL OVERRIDES (used in manual / auto modes) --------------------------
+solarflare_driver_pkg_src: ""
+solarflare_driver_pkg_url: ""
+solarflare_onload_pkg_src: ""
+solarflare_onload_pkg_url: ""
+solarflare_firmware_image: ""
+solarflare_firmware_force: false
+solarflare_firmware_post_wait: 30
+
+solarflare_sfupdate_bin: "/usr/sbin/sfupdate"
+
+# --- HTTP package repository ------------------------------------------------
+# All driver / onload / firmware artefacts live on one internal HTTP server,
+# protected by HTTP Basic auth, laid out FLAT: one directory per OS, all the
+# packages for that OS in that directory.
+#
+#   {base_url}/{os_dir}/<all package files>
+#
+# Where {os_dir} is solarflare_repo_os_dir, computed per host (default below).
+solarflare_repo_base_url: "https://repo.example.local/solarflare"
+solarflare_repo_user: ""                     # set in vault
+solarflare_repo_pass: ""                     # set in vault
+solarflare_repo_validate_certs: true
+solarflare_repo_force_basic_auth: true
+
+# Per-host directory under the base URL. Override in group_vars/ to match
+# however your tree is named (e.g. "rhel8", "ubuntu-22.04", "debian/12", ...).
+# The default uses the distribution name + major version, lowercased.
+solarflare_repo_os_dir: >-
+  {{ (ansible_distribution ~ ansible_distribution_major_version) | lower }}
+
+# Auto-detect the Onload package SET from the matrix entry's `pkg:` filename.
+# The role splits the filename's base name (everything before the version)
+# and probes the repo for conventional siblings: onload-kmod, onload-devel
+# (RHEL), onload-dkms, onload-dev (Debian). A 404 / missing file means
+# "not present in your repo" → skipped silently. Disable by setting this
+# to false and supplying explicit kmod_pkg/devel_pkg fields in the matrix.
+solarflare_onload_autodetect_set: true
+
+# Sibling-name suffixes probed during auto-detect. Keyed by OS family.
+# Override in group_vars to add more (e.g. -profiles, -tools).
+solarflare_onload_sibling_suffixes:
+  RedHat:
+    - { name: "onload-kmod",   required: true  }
+    - { name: "onload-devel",  required: false }
+  Debian:
+    - { name: "onload-dkms",   required: true  }
+    - { name: "onload-dev",    required: false }
+
+# --- Modules / services ------------------------------------------------------
+solarflare_modules:
+  - onload
+  - onload_cplane
+  - sfc_char
+  - sfc_resource
+  - sfc_affinity
+  - sfc_tune
+  - sfc_control
+  - virtual_bus
+  - sfc
+
+solarflare_services:
+  - openonload
+  - onload
+  - sfptpd
+  - sfc
+
+# =============================================================================
+# COMPATIBILITY MATRIX
+# =============================================================================
+# First entry matching ALL of these wins:
+#   - os_family                  vs ansible_os_family    (required)
+#   - distribution               vs ansible_distribution (optional; Ubuntu vs Debian)
+#   - distribution_major_version vs ansible_distribution_major_version (optional)
+#   - kernel_regex               vs ansible_kernel       (required)
+#
+# IMPORTANT
+#   - Version strings below are PLACEHOLDERS based on Solarflare/Xilinx/AMD
+#     public release lineage. Verify with the vendor's compatibility matrix
+#     before deploying — newer firmware may not support older NICs.
+#   - RHEL 6 / Ubuntu 16.04 / Debian 10 / Debian 11 are EOL or extended-support.
+#     Onload 8.x dropped support for very old kernels; use Onload 7.x there.
+#   - `source` URLs point operators to the right download page for the next
+#     manual refresh.
+
+solarflare_compat_matrix:
+
+  # =========================================================================
+  # Red Hat Enterprise Linux (and derivatives — Rocky, Alma, CentOS)
+  # =========================================================================
+
+  - release: "el6"
+    os_family: "RedHat"
+    distribution_major_version: "6"
+    kernel_regex: "^2\\.6\\.32-.*el6"
+    driver:
+      version: "4.15.6.1015"            # last sfc series supporting 2.6.32
+      pkg: "kernel-module-sfc-RHEL6-4.15.6.1015-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "6.2.7.1001"
+      image: "/opt/sf/firmware/SFA-bundle-6.2.7.1001.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "7.1.3.202"               # Onload 7 line — last to support EL6
+      pkg: "onload-7.1.3.202-1.x86_64.rpm"
+      kmod_pkg: "onload-kmod-7.1.3.202-1.x86_64.rpm"
+      devel_pkg: "onload-devel-7.1.3.202-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "el7"
+    os_family: "RedHat"
+    distribution_major_version: "7"
+    kernel_regex: "^3\\.10\\.0-.*el7"
+    driver:
+      version: "5.3.3.1004"
+      pkg: "kernel-module-sfc-RHEL7-5.3.3.1004-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.0.2.34"
+      pkg: "onload-8.0.2.34-1.x86_64.rpm"
+      kmod_pkg: "onload-kmod-8.0.2.34-1.x86_64.rpm"
+      devel_pkg: "onload-devel-8.0.2.34-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "el8"
+    os_family: "RedHat"
+    distribution_major_version: "8"
+    kernel_regex: "^4\\.18\\.0-.*el8"
+    driver:
+      version: "5.3.14.1010"
+      pkg: "kernel-module-sfc-RHEL8-5.3.14.1010-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.1.2.26"
+      pkg: "onload-8.1.2.26-1.x86_64.rpm"
+      kmod_pkg: "onload-kmod-8.1.2.26-1.x86_64.rpm"
+      devel_pkg: "onload-devel-8.1.2.26-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "el9"
+    os_family: "RedHat"
+    distribution_major_version: "9"
+    kernel_regex: "^5\\.14\\.0-.*el9"
+    driver:
+      version: "5.3.14.1010"
+      pkg: "kernel-module-sfc-RHEL9-5.3.14.1010-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.1.2.26"
+      pkg: "onload-8.1.2.26-1.x86_64.rpm"
+      kmod_pkg: "onload-kmod-8.1.2.26-1.x86_64.rpm"
+      devel_pkg: "onload-devel-8.1.2.26-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "el10"
+    os_family: "RedHat"
+    distribution_major_version: "10"
+    kernel_regex: "^6\\.12\\."
+    driver:
+      version: "5.3.18.1000"             # placeholder — confirm with vendor
+      pkg: "kernel-module-sfc-RHEL10-5.3.18.1000-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "9.0.0.86"                # placeholder — Onload 9 line for new kernels
+      pkg: "onload-9.0.0.86-1.x86_64.rpm"
+      kmod_pkg: "onload-kmod-9.0.0.86-1.x86_64.rpm"
+      devel_pkg: "onload-devel-9.0.0.86-1.x86_64.rpm"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  # =========================================================================
+  # Debian
+  # =========================================================================
+
+  - release: "debian10"
+    os_family: "Debian"
+    distribution: "Debian"
+    distribution_major_version: "10"
+    kernel_regex: "^4\\.19\\."
+    driver:
+      version: "5.3.3.1004"
+      pkg: "sfc-dkms_5.3.3.1004-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.0.2.34"
+      pkg: "onload_8.0.2.34-1_amd64.deb"
+      kmod_pkg: "onload-dkms_8.0.2.34-1_all.deb"
+      devel_pkg: "onload-dev_8.0.2.34-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "debian11"
+    os_family: "Debian"
+    distribution: "Debian"
+    distribution_major_version: "11"
+    kernel_regex: "^5\\.10\\."
+    driver:
+      version: "5.3.14.1010"
+      pkg: "sfc-dkms_5.3.14.1010-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.1.2.26"
+      pkg: "onload_8.1.2.26-1_amd64.deb"
+      kmod_pkg: "onload-dkms_8.1.2.26-1_all.deb"
+      devel_pkg: "onload-dev_8.1.2.26-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "debian12"
+    os_family: "Debian"
+    distribution: "Debian"
+    distribution_major_version: "12"
+    kernel_regex: "^6\\.1\\."
+    driver:
+      version: "5.3.14.1010"
+      pkg: "sfc-dkms_5.3.14.1010-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.1.2.26"
+      pkg: "onload_8.1.2.26-1_amd64.deb"
+      kmod_pkg: "onload-dkms_8.1.2.26-1_all.deb"
+      devel_pkg: "onload-dev_8.1.2.26-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "debian13"
+    os_family: "Debian"
+    distribution: "Debian"
+    distribution_major_version: "13"
+    kernel_regex: "^6\\.12\\."
+    driver:
+      version: "5.3.18.1000"             # placeholder for trixie 6.12 kernel
+      pkg: "sfc-dkms_5.3.18.1000-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "9.0.0.86"
+      pkg: "onload_9.0.0.86-1_amd64.deb"
+      kmod_pkg: "onload-dkms_9.0.0.86-1_all.deb"
+      devel_pkg: "onload-dev_9.0.0.86-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  # =========================================================================
+  # Ubuntu LTS (.04 releases only)
+  # Two entries per release: GA kernel + HWE kernel (most recent point release).
+  # =========================================================================
+
+  # ---- Ubuntu 16.04 Xenial ------------------------------------------------
+  - release: "ubuntu1604-ga"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "16"
+    kernel_regex: "^4\\.4\\."
+    driver:
+      version: "4.15.6.1015"
+      pkg: "sfc-dkms_4.15.6.1015-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "6.2.7.1001"
+      image: "/opt/sf/firmware/SFA-bundle-6.2.7.1001.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "7.1.3.202"
+      pkg: "onload_7.1.3.202-1_amd64.deb"
+      kmod_pkg: "onload-dkms_7.1.3.202-1_all.deb"
+      devel_pkg: "onload-dev_7.1.3.202-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "ubuntu1604-hwe"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "16"
+    kernel_regex: "^4\\.15\\."
+    driver:
+      version: "4.15.6.1015"
+      pkg: "sfc-dkms_4.15.6.1015-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "6.2.7.1001"
+      image: "/opt/sf/firmware/SFA-bundle-6.2.7.1001.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "7.1.3.202"
+      pkg: "onload_7.1.3.202-1_amd64.deb"
+      kmod_pkg: "onload-dkms_7.1.3.202-1_all.deb"
+      devel_pkg: "onload-dev_7.1.3.202-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  # ---- Ubuntu 18.04 Bionic ------------------------------------------------
+  - release: "ubuntu1804-ga"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "18"
+    kernel_regex: "^4\\.15\\."
+    driver:
+      version: "5.3.3.1004"
+      pkg: "sfc-dkms_5.3.3.1004-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.0.2.34"
+      pkg: "onload_8.0.2.34-1_amd64.deb"
+      kmod_pkg: "onload-dkms_8.0.2.34-1_all.deb"
+      devel_pkg: "onload-dev_8.0.2.34-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "ubuntu1804-hwe"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "18"
+    kernel_regex: "^5\\.4\\."
+    driver:
+      version: "5.3.3.1004"
+      pkg: "sfc-dkms_5.3.3.1004-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.0.2.34"
+      pkg: "onload_8.0.2.34-1_amd64.deb"
+      kmod_pkg: "onload-dkms_8.0.2.34-1_all.deb"
+      devel_pkg: "onload-dev_8.0.2.34-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  # ---- Ubuntu 20.04 Focal -------------------------------------------------
+  - release: "ubuntu2004-ga"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "20"
+    kernel_regex: "^5\\.4\\."
+    driver:
+      version: "5.3.14.1010"
+      pkg: "sfc-dkms_5.3.14.1010-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.1.2.26"
+      pkg: "onload_8.1.2.26-1_amd64.deb"
+      kmod_pkg: "onload-dkms_8.1.2.26-1_all.deb"
+      devel_pkg: "onload-dev_8.1.2.26-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "ubuntu2004-hwe"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "20"
+    kernel_regex: "^5\\.15\\."
+    driver:
+      version: "5.3.14.1010"
+      pkg: "sfc-dkms_5.3.14.1010-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.1.2.26"
+      pkg: "onload_8.1.2.26-1_amd64.deb"
+      kmod_pkg: "onload-dkms_8.1.2.26-1_all.deb"
+      devel_pkg: "onload-dev_8.1.2.26-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  # ---- Ubuntu 22.04 Jammy -------------------------------------------------
+  - release: "ubuntu2204-ga"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "22"
+    kernel_regex: "^5\\.15\\."
+    driver:
+      version: "5.3.14.1010"
+      pkg: "sfc-dkms_5.3.14.1010-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "8.1.2.26"
+      pkg: "onload_8.1.2.26-1_amd64.deb"
+      kmod_pkg: "onload-dkms_8.1.2.26-1_all.deb"
+      devel_pkg: "onload-dev_8.1.2.26-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "ubuntu2204-hwe"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "22"
+    kernel_regex: "^6\\.8\\."
+    driver:
+      version: "5.3.18.1000"
+      pkg: "sfc-dkms_5.3.18.1000-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "9.0.0.86"
+      pkg: "onload_9.0.0.86-1_amd64.deb"
+      kmod_pkg: "onload-dkms_9.0.0.86-1_all.deb"
+      devel_pkg: "onload-dev_9.0.0.86-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  # ---- Ubuntu 24.04 Noble -------------------------------------------------
+  - release: "ubuntu2404-ga"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "24"
+    kernel_regex: "^6\\.8\\."
+    driver:
+      version: "5.3.18.1000"
+      pkg: "sfc-dkms_5.3.18.1000-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "9.0.0.86"
+      pkg: "onload_9.0.0.86-1_amd64.deb"
+      kmod_pkg: "onload-dkms_9.0.0.86-1_all.deb"
+      devel_pkg: "onload-dev_9.0.0.86-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  - release: "ubuntu2404-hwe"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "24"
+    kernel_regex: "^6\\.11\\."
+    driver:
+      version: "5.3.18.1000"
+      pkg: "sfc-dkms_5.3.18.1000-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "9.0.0.86"
+      pkg: "onload_9.0.0.86-1_amd64.deb"
+      kmod_pkg: "onload-dkms_9.0.0.86-1_all.deb"
+      devel_pkg: "onload-dev_9.0.0.86-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
+
+  # ---- Ubuntu 26.04 Resolute Raccoon --------------------------------------
+  - release: "ubuntu2604-ga"
+    os_family: "Debian"
+    distribution: "Ubuntu"
+    distribution_major_version: "26"
+    kernel_regex: "^6\\.14\\."
+    driver:
+      version: "5.3.18.1000"             # placeholder — confirm when vendor publishes
+      pkg: "sfc-dkms_5.3.18.1000-1_all.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html"
+    firmware:
+      version: "8.7.0.1004"
+      image: "/opt/sf/firmware/SFA-bundle-8.7.0.1004.dat"
+      source: "https://www.xilinx.com/support/download/nic-firmware.html"
+    onload:
+      version: "9.0.0.86"
+      pkg: "onload_9.0.0.86-1_amd64.deb"
+      kmod_pkg: "onload-dkms_9.0.0.86-1_all.deb"
+      devel_pkg: "onload-dev_9.0.0.86-1_amd64.deb"
+      url: ""
+      source: "https://www.xilinx.com/support/download/nic-software-and-drivers.html#onload"
